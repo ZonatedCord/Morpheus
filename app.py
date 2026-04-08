@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from flask import Flask, jsonify
 
-from finder_clienti_varesotto.db import count_leads, init_db, query_leads
-from finder_clienti_varesotto.paths import DB_PATH
+from finder_clienti_varesotto.db import count_leads, import_from_csv, init_db, query_leads
+from finder_clienti_varesotto.paths import DB_PATH, DEFAULT_HOTLIST, DEFAULT_OSM_OUTPUT
 
 app = Flask(__name__)
 
@@ -320,8 +320,13 @@ if __name__ == "__main__":
     init_db(DB_PATH)
     n = count_leads(DB_PATH)
     if n == 0:
-        print("⚠  Database vuoto. Esegui prima: python scripts/importa_db.py")
-    else:
+        if DEFAULT_OSM_OUTPUT.exists():
+            print("Database vuoto — importo dal CSV...")
+            import_from_csv(DEFAULT_OSM_OUTPUT, DEFAULT_HOTLIST, DB_PATH)
+            n = count_leads(DB_PATH)
+        else:
+            print("⚠  Nessun dato. Esegui prima: python scripts/varesotto_osm.py")
+    if n > 0:
         print(f"✓  {n} attività nel database")
     print("→  Apri http://localhost:5000\n")
     app.run(debug=False, port=5000)

@@ -1,0 +1,14 @@
+.DS_Store
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+data/leads.db
+data/output/linkedin/*.csv
+data/output/osm/*.csv
+data/output/osm/*.xlsx
+data/output/outreach/*.csv
+data/output/outreach/*.md
+data/output/research/*.csv
+data/output/research/*.md

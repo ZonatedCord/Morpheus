@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VARESOTTO CLIENT FINDER - LINKEDIN VERSION
+MORPHEUS - LINKEDIN VERSION
 Genera link di ricerca LinkedIn pronti e prepara i file di lavoro.
 """
 
@@ -211,7 +211,7 @@ class LinkedInClientFinder:
     def run(self) -> None:
         """Esegue il programma."""
         print("\n" + "=" * 80)
-        print("VARESOTTO CLIENT FINDER - LINKEDIN VERSION")
+        print("MORPHEUS - LINKEDIN VERSION")
         print("=" * 80)
         print(f"Data: {self.timestamp}\n")
 

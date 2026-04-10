@@ -12,3 +12,4 @@ data/output/outreach/*.csv
 data/output/outreach/*.md
 data/output/research/*.csv
 data/output/research/*.md
+.env

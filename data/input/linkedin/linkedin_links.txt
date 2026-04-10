@@ -1,0 +1,71 @@
+LINK DI RICERCA LINKEDIN - VARESOTTO
+================================================================================
+
+Istruzioni:
+1. Clicca su ogni link
+2. Accedi a LinkedIn
+3. Copia i risultati e incollali nel file data/input/linkedin/input.txt
+4. Esegui: python3 scripts/varesotto_linkedin_import.py
+
+================================================================================
+
+
+PRIORITA ALTA
+Categoria: Ristoranti
+Keywords: ristorante OR ristorazione
+Link: https://www.linkedin.com/search/results/companies/?keywords=ristorante%20OR%20ristorazione&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA ALTA
+Categoria: Bar/Caffetterie
+Keywords: bar OR caffetteria OR cafe
+Link: https://www.linkedin.com/search/results/companies/?keywords=bar%20OR%20caffetteria%20OR%20cafe&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA ALTA
+Categoria: Pizzerie
+Keywords: pizzeria
+Link: https://www.linkedin.com/search/results/companies/?keywords=pizzeria&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA MEDIA
+Categoria: Hotel/B&B
+Keywords: hotel OR albergo OR "bed and breakfast"
+Link: https://www.linkedin.com/search/results/companies/?keywords=hotel%20OR%20albergo%20OR%20%22bed%20and%20breakfast%22&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA MEDIA
+Categoria: Parrucchieri
+Keywords: parrucchiere OR barbiere OR salone bellezza
+Link: https://www.linkedin.com/search/results/companies/?keywords=parrucchiere%20OR%20barbiere%20OR%20salone%20bellezza&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA MEDIA
+Categoria: Palestre
+Keywords: palestra OR fitness OR gym OR "centro wellness"
+Link: https://www.linkedin.com/search/results/companies/?keywords=palestra%20OR%20fitness%20OR%20gym%20OR%20%22centro%20wellness%22&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA BASSA
+Categoria: Negozi Abbigliamento
+Keywords: abbigliamento OR moda OR boutique
+Link: https://www.linkedin.com/search/results/companies/?keywords=abbigliamento%20OR%20moda%20OR%20boutique&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA BASSA
+Categoria: Farmacie/Parafarmaci
+Keywords: farmacia OR parafarmacia
+Link: https://www.linkedin.com/search/results/companies/?keywords=farmacia%20OR%20parafarmacia&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA BASSA
+Categoria: Negozi Alimentari
+Keywords: alimentari OR salumeria OR supermercato
+Link: https://www.linkedin.com/search/results/companies/?keywords=alimentari%20OR%20salumeria%20OR%20supermercato&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------
+
+PRIORITA BASSA
+Categoria: Studi Professionali
+Keywords: dentista OR studio legale OR consulente
+Link: https://www.linkedin.com/search/results/companies/?keywords=dentista%20OR%20studio%20legale%20OR%20consulente&origin=GLOBAL_SEARCH_HEADER&sid=aba
+--------------------------------------------------------------------------------

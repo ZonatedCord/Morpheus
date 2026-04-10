@@ -3,11 +3,12 @@
 CLI per interrogare il database dei lead B2B.
 
 Esempi:
-    python scripts/cerca_lead.py --categoria ristorazione --limit 20
-    python scripts/cerca_lead.py --priorita ALTISSIMA --senza-sito
-    python scripts/cerca_lead.py --hotlist --priorita ALTISSIMA ALTA
-    python scripts/cerca_lead.py --comune vedano --limit 10
-    python scripts/cerca_lead.py --hotlist --output csv > hotlist.csv
+    python3 scripts/cerca_lead.py --categoria ristorazione --limit 20
+    python3 scripts/cerca_lead.py --priorita ALTISSIMA --senza-sito
+    python3 scripts/cerca_lead.py --hotlist --priorita ALTISSIMA ALTA
+    python3 scripts/cerca_lead.py --comune vedano --limit 10
+    python3 scripts/cerca_lead.py --hotlist --output csv > hotlist.csv
+    python3 scripts/cerca_lead.py --list-datasets
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from finder_clienti_varesotto.db import count_leads, query_leads
-from finder_clienti_varesotto.paths import DB_PATH
+from morpheus.db import count_leads, list_datasets, query_leads
+from morpheus.paths import DB_PATH
 
 COLS_DISPLAY = ["nome", "categoria", "comune", "telefono", "sito", "priorita", "distanza_km", "in_hotlist"]
 COLS_CSV = ["nome", "categoria", "comune", "telefono", "email", "sito", "ha_sito",
@@ -70,30 +71,42 @@ def main() -> None:
                         help="Solo attività senza sito web")
     parser.add_argument("--hotlist", action="store_true",
                         help="Solo lead nella hotlist arricchita")
-    parser.add_argument("--limit", "-n", type=int, default=30, metavar="N",
-                        help="Numero massimo di risultati (default: 30)")
+    parser.add_argument("--dataset", "-d", metavar="DATASET",
+                        help="Dataset/origine da interrogare (default: dataset più recente)")
+    parser.add_argument("--list-datasets", action="store_true",
+                        help="Mostra i dataset disponibili e termina")
+    parser.add_argument("--limit", "-n", type=int, default=20, metavar="N",
+                        help="Numero massimo di risultati (default: 20)")
     parser.add_argument("--output", choices=["table", "csv"], default="table",
                         help="Formato output: table (default) o csv")
     args = parser.parse_args()
 
-    total = count_leads(DB_PATH)
-    if total == 0:
-        print("Database vuoto. Esegui: python scripts/importa_db.py", file=sys.stderr)
-        sys.exit(1)
+    if args.list_datasets:
+        datasets = list_datasets(DB_PATH)
+        if not datasets:
+            print("Nessun dataset disponibile.", file=sys.stderr)
+            sys.exit(0)
+        for dataset in datasets:
+            active = " *" if dataset.get("is_active") else ""
+            print(
+                f"{dataset['dataset_id']}{active}\t{dataset['label']}\t"
+                f"{dataset['lead_count']} lead\t{dataset['reference_query']}"
+            )
+        sys.exit(0)
 
-    # Normalizza categoria (case-insensitive match contro valori nel DB)
-    categoria = None
-    if args.categoria:
-        # Passa as-is, il DB è case-sensitive ma la query usa IN()
-        categoria = args.categoria
+    total = count_leads(DB_PATH, dataset_id=args.dataset)
+    if total == 0:
+        print("Database vuoto. Esegui: python3 scripts/importa_db.py", file=sys.stderr)
+        sys.exit(1)
 
     leads = query_leads(
         priorita=args.priorita,
-        categoria=categoria,
+        categoria=args.categoria,
         solo_senza_sito=args.senza_sito,
         solo_hotlist=args.hotlist,
         comune=args.comune,
         limit=args.limit,
+        dataset_id=args.dataset,
         db_path=DB_PATH,
     )
 
@@ -104,7 +117,7 @@ def main() -> None:
     if args.output == "csv":
         print_csv_output(leads)
     else:
-        print(f"\n{len(leads)} risultati (su {total} totali)\n")
+        print(f"\n{len(leads)} risultati (su {total} nel dataset)\n")
         print_table(leads)
         print()
 

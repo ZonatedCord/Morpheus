@@ -5,7 +5,7 @@ from _bootstrap import bootstrap_project
 
 bootstrap_project()
 
-from finder_clienti_varesotto.outreach_hotlist import main
+from morpheus.outreach_hotlist import main
 
 
 if __name__ == "__main__":

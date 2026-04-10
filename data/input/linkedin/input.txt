@@ -1,0 +1,37 @@
+# ISTRUZIONI:
+# 1. Per ogni categoria, clicca sul link LinkedIn
+# 2. Copia i risultati (Nome Azienda, Indirizzo, ecc)
+# 3. Incolla qui sotto nel formato indicato
+
+# FORMATO:
+# Nome Azienda | Indirizzo | Telefono | Email | Sito Web | Note
+
+# RISTORANTI (PRIORITA ALTA)
+# Copia i risultati da LinkedIn qui:
+
+# BAR/CAFFETTERIE (PRIORITA ALTA)
+# Copia i risultati da LinkedIn qui:
+
+# PIZZERIE (PRIORITA ALTA)
+# Copia i risultati da LinkedIn qui:
+
+# HOTEL/B&B (PRIORITA MEDIA)
+# Copia i risultati da LinkedIn qui:
+
+# PARRUCCHIERI (PRIORITA MEDIA)
+# Copia i risultati da LinkedIn qui:
+
+# PALESTRE (PRIORITA MEDIA)
+# Copia i risultati da LinkedIn qui:
+
+# NEGOZI ABBIGLIAMENTO (PRIORITA BASSA)
+# Copia i risultati da LinkedIn qui:
+
+# FARMACIE (PRIORITA BASSA)
+# Copia i risultati da LinkedIn qui:
+
+# NEGOZI ALIMENTARI (PRIORITA BASSA)
+# Copia i risultati da LinkedIn qui:
+
+# STUDI PROFESSIONALI (PRIORITA BASSA)
+# Copia i risultati da LinkedIn qui:

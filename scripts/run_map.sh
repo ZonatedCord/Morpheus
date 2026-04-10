@@ -5,11 +5,14 @@
 set -e
 cd "$(dirname "$0")/.."
 
-if [ ! -f ".venv/bin/activate" ]; then
-  echo "Ambiente virtuale non trovato. Esegui prima: bash scripts/setup.sh"
+if [ -x ".venv/bin/python3" ]; then
+  PYTHON_BIN=".venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+else
+  echo "Python 3 non trovato. Esegui prima: bash scripts/setup.sh"
   exit 1
 fi
 
-source .venv/bin/activate
 echo "→  http://localhost:5000"
-python app.py
+"$PYTHON_BIN" app.py

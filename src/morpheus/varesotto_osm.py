@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-VARESOTTO CLIENT FINDER - OSM/OVERPASS
+MORPHEUS — RACCOLTA LEAD OSM/OVERPASS + FOURSQUARE
 
-Recupera attivita' commerciali nella provincia di Varese da OpenStreetMap,
-le ordina per distanza da Vedano Olona e mette in cima quelle senza sito web.
+Recupera attivita' commerciali in una provincia da OpenStreetMap,
+le ordina per score composito (distanza + assenza sito + categoria target)
+e le integra con dati da Foursquare Places API.
 """
 
 from __future__ import annotations
@@ -11,13 +12,14 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 from pathlib import Path
 import re
 import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -30,12 +32,21 @@ OVERPASS_ENDPOINTS = (
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass-api.de/api/interpreter",
 )
+FSQ_SEARCH_URL = "https://api.foursquare.com/v3/places/search"
 
 DEFAULT_REFERENCE_QUERY = "Vedano Olona, Varese, Lombardia, Italia"
 DEFAULT_PROVINCE_QUERY = "Provincia di Varese, Lombardia, Italia"
 DEFAULT_OUTPUT = str(DEFAULT_OSM_OUTPUT)
 
-# Fallback usato se Nominatim non riesce a geocodificare Vedano Olona.
+# Scoring: configurabili via env (opzionale)
+DEFAULT_MAX_DISTANCE_KM: float = float(os.environ.get("SCORING_MAX_DISTANCE_KM", "50"))
+DEFAULT_TARGET_CATEGORIES: list[str] = [
+    cat.strip()
+    for cat in os.environ.get("SCORING_CATEGORIES", "").split(",")
+    if cat.strip()
+]
+
+# Fallback usato se Nominatim non riesce a geocodificare il punto di riferimento.
 DEFAULT_REFERENCE_POINT = {
     "name": "Vedano Olona",
     "lat": 45.7755,
@@ -96,16 +107,21 @@ HOSPITALITY_VALUES = {
     "motel",
 }
 BEAUTY_VALUES = {"beauty", "hairdresser", "barber"}
-FITNESS_VALUES = {"fitness_centre", "sports_centre"}
+FITNESS_VALUES = {"dance", "fitness_centre", "sports_centre"}
 HEALTH_VALUES = {"clinic", "dentist", "doctors", "pharmacy", "veterinary"}
+ENTERTAINMENT_VALUES = {"cinema", "events_venue", "nightclub", "theatre"}
 OFFICE_VALUES = {
     "accountant",
     "architect",
+    "association",
     "company",
     "estate_agent",
     "financial",
     "insurance",
+    "it",
     "lawyer",
+    "logistics",
+    "notary",
     "travel_agent",
 }
 SHOP_BEAUTY_VALUES = {"beauty", "cosmetics", "hairdresser", "perfumery"}
@@ -121,6 +137,7 @@ CATEGORY_ORDER = {
     "Servizi Professionali": 5,
     "Artigiani": 6,
     "Negozi": 7,
+    "Intrattenimento": 8,
 }
 
 FRIENDLY_VALUE_LABELS = {
@@ -128,6 +145,7 @@ FRIENDLY_VALUE_LABELS = {
     "alpine_hut": "Rifugio",
     "apartment": "Appartamenti",
     "architect": "Architetto",
+    "association": "Associazione",
     "bar": "Bar",
     "barber": "Barbiere",
     "beauty": "Centro Estetico",
@@ -136,11 +154,14 @@ FRIENDLY_VALUE_LABELS = {
     "cafe": "Caffetteria",
     "camp_site": "Camping",
     "chalet": "Chalet",
+    "cinema": "Cinema",
     "clinic": "Clinica",
     "company": "Azienda",
+    "dance": "Studio Danza",
     "dentist": "Dentista",
     "doctors": "Studio Medico",
     "estate_agent": "Agenzia Immobiliare",
+    "events_venue": "Spazio Eventi",
     "fast_food": "Fast Food",
     "financial": "Servizi Finanziari",
     "fitness_centre": "Centro Fitness",
@@ -151,15 +172,85 @@ FRIENDLY_VALUE_LABELS = {
     "hotel": "Hotel",
     "ice_cream": "Gelateria",
     "insurance": "Assicurazioni",
+    "it": "Azienda IT",
     "lawyer": "Studio Legale",
+    "logistics": "Logistica",
     "motel": "Motel",
+    "nightclub": "Discoteca",
+    "notary": "Notaio",
     "pharmacy": "Farmacia",
     "pub": "Pub",
     "restaurant": "Ristorante",
     "sports_centre": "Centro Sportivo",
+    "theatre": "Teatro",
     "travel_agent": "Agenzia Viaggi",
     "veterinary": "Veterinario",
 }
+
+# Mapping categoria Foursquare → nostra categoria.
+# Lista ordinata: prima corrispondenza trovata vince (case-insensitive substring).
+_FSQ_CATEGORY_MAP: list[tuple[str, str]] = [
+    ("restaurant", "Ristorazione"),
+    ("trattoria", "Ristorazione"),
+    ("osteria", "Ristorazione"),
+    ("cafe", "Ristorazione"),
+    ("coffee", "Ristorazione"),
+    ("bar", "Ristorazione"),
+    ("pizza", "Ristorazione"),
+    ("bakery", "Ristorazione"),
+    ("food", "Ristorazione"),
+    ("pub", "Ristorazione"),
+    ("hotel", "Ospitalita'"),
+    ("hostel", "Ospitalita'"),
+    ("bed & breakfast", "Ospitalita'"),
+    ("b&b", "Ospitalita'"),
+    ("lodging", "Ospitalita'"),
+    ("camping", "Ospitalita'"),
+    ("guest house", "Ospitalita'"),
+    ("beauty", "Beauty & Benessere"),
+    ("spa", "Beauty & Benessere"),
+    ("hair", "Beauty & Benessere"),
+    ("nail", "Beauty & Benessere"),
+    ("barber", "Beauty & Benessere"),
+    ("cosmet", "Beauty & Benessere"),
+    ("dance", "Fitness & Sport"),
+    ("gym", "Fitness & Sport"),
+    ("fitness", "Fitness & Sport"),
+    ("sport", "Fitness & Sport"),
+    ("palestra", "Fitness & Sport"),
+    ("yoga", "Fitness & Sport"),
+    ("medical", "Sanita'"),
+    ("dental", "Sanita'"),
+    ("pharmacy", "Sanita'"),
+    ("farmacia", "Sanita'"),
+    ("doctor", "Sanita'"),
+    ("health", "Sanita'"),
+    ("clinic", "Sanita'"),
+    ("hospital", "Sanita'"),
+    ("nightclub", "Intrattenimento"),
+    ("cinema", "Intrattenimento"),
+    ("theater", "Intrattenimento"),
+    ("theatre", "Intrattenimento"),
+    ("entertainment", "Intrattenimento"),
+    ("event", "Intrattenimento"),
+    ("law", "Servizi Professionali"),
+    ("accountant", "Servizi Professionali"),
+    ("insurance", "Servizi Professionali"),
+    ("real estate", "Servizi Professionali"),
+    ("tech", "Servizi Professionali"),
+    ("it service", "Servizi Professionali"),
+    ("financial", "Servizi Professionali"),
+    ("craft", "Artigiani"),
+    ("repair", "Artigiani"),
+    ("workshop", "Artigiani"),
+    ("plumb", "Artigiani"),
+    ("electric", "Artigiani"),
+    ("tailor", "Artigiani"),
+    ("shop", "Negozi"),
+    ("store", "Negozi"),
+    ("boutique", "Negozi"),
+    ("market", "Negozi"),
+]
 
 
 @dataclass(frozen=True)
@@ -216,6 +307,11 @@ SEARCH_GROUPS = (
         values=tuple(sorted(OFFICE_VALUES)),
     ),
     SearchGroup(
+        label="Intrattenimento",
+        key="amenity",
+        values=tuple(sorted(ENTERTAINMENT_VALUES)),
+    ),
+    SearchGroup(
         label="Artigiani",
         key="craft",
         values=None,
@@ -228,13 +324,16 @@ SEARCH_GROUPS = (
 )
 
 
-class VaresottoOSMFinder:
+class MorpheusFinder:
     def __init__(
         self,
         province_query: str = DEFAULT_PROVINCE_QUERY,
         reference_query: str = DEFAULT_REFERENCE_QUERY,
         output_file: str = DEFAULT_OUTPUT,
         limit: int = 0,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        target_categories: list[str] | None = None,
+        max_distance_km: float | None = None,
     ) -> None:
         self.province_query = province_query
         self.reference_query = reference_query
@@ -245,13 +344,35 @@ class VaresottoOSMFinder:
         self.failed_groups: list[str] = []
         self.reference_point = DEFAULT_REFERENCE_POINT.copy()
         self.area_id: int | None = None
+        self.progress_callback = progress_callback
+        self.target_categories: list[str] = (
+            target_categories if target_categories is not None else DEFAULT_TARGET_CATEGORIES
+        )
+        self.max_distance_km: float = (
+            max_distance_km if max_distance_km is not None else DEFAULT_MAX_DISTANCE_KM
+        )
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "User-Agent": "VaresottoClientFinder/2.0 (Codex)",
+                "User-Agent": "Morpheus/1.0 (B2B lead generation)",
                 "Accept-Language": "it",
             }
         )
+
+    # ── Progress ───────────────────────────────────────────────────────────────
+
+    def _notify_progress(self, stage: str, percent: int, message: str, **extra: Any) -> None:
+        if not self.progress_callback:
+            return
+        payload = {
+            "stage": stage,
+            "progress": max(0, min(100, int(percent))),
+            "message": message,
+        }
+        payload.update(extra)
+        self.progress_callback(payload)
+
+    # ── Text utilities ─────────────────────────────────────────────────────────
 
     def _normalize_text(self, value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value)
@@ -259,13 +380,14 @@ class VaresottoOSMFinder:
         lowered = ascii_value.lower().strip()
         return re.sub(r"\s+", " ", lowered)
 
+    # ── Geo ────────────────────────────────────────────────────────────────────
+
     def _haversine_km(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         radius_km = 6371.0
         lat1_rad = math.radians(lat1)
         lat2_rad = math.radians(lat2)
         delta_lat = math.radians(lat2 - lat1)
         delta_lon = math.radians(lon2 - lon1)
-
         a = (
             math.sin(delta_lat / 2) ** 2
             + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2
@@ -273,16 +395,36 @@ class VaresottoOSMFinder:
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         return radius_km * c
 
-    def _distance_priority(self, distance_km: float) -> str:
-        if distance_km <= 5:
+    # ── Composite scoring ──────────────────────────────────────────────────────
+
+    def _composite_score(
+        self,
+        distance_km: float,
+        has_website: bool,
+        category: str,
+    ) -> float:
+        """Score composito [0, 1]: distanza(50%) + assenza sito(30%) + categoria target(20%)."""
+        dist_norm = max(0.0, 1.0 - distance_km / self.max_distance_km)
+        assenza_sito = 0.0 if has_website else 1.0
+        cat_target = (
+            1.0
+            if (self.target_categories and category in self.target_categories)
+            else 0.0
+        )
+        return 0.5 * dist_norm + 0.3 * assenza_sito + 0.2 * cat_target
+
+    def _composite_priority(self, score: float) -> str:
+        if score >= 0.75:
             return "ALTISSIMA"
-        if distance_km <= 10:
+        if score >= 0.55:
             return "ALTA"
-        if distance_km <= 20:
+        if score >= 0.35:
             return "MEDIA"
-        if distance_km <= 30:
+        if score >= 0.20:
             return "BASSA"
         return "MOLTO BASSA"
+
+    # ── OSM tag helpers ────────────────────────────────────────────────────────
 
     def _website_opportunity(self, website: str, email: str) -> str:
         if not website:
@@ -307,7 +449,6 @@ class VaresottoOSMFinder:
             tags.get("official_name"),
             tags.get("operator"),
         )
-
         best_name = ""
         for candidate in candidates:
             if not isinstance(candidate, str):
@@ -333,7 +474,6 @@ class VaresottoOSMFinder:
     def _is_useful_name(self, name: str, subtype: str) -> bool:
         normalized_name = self._normalize_text(name)
         normalized_subtype = self._normalize_text(subtype.replace("_", " "))
-
         if len(normalized_name) < 4:
             return False
         if normalized_name in GENERIC_NAMES:
@@ -360,6 +500,8 @@ class VaresottoOSMFinder:
                     return "Beauty & Benessere", self._friendly_value(raw_value)
                 if raw_value in HEALTH_VALUES:
                     return "Sanita'", self._friendly_value(raw_value)
+                if raw_value in ENTERTAINMENT_VALUES:
+                    return "Intrattenimento", self._friendly_value(raw_value)
             elif key == "tourism" and raw_value in HOSPITALITY_VALUES:
                 return "Ospitalita'", self._friendly_value(raw_value)
             elif key == "leisure" and raw_value in FITNESS_VALUES:
@@ -382,7 +524,9 @@ class VaresottoOSMFinder:
 
     def _compose_address(self, tags: dict[str, Any]) -> tuple[str, str]:
         address_full = self._first_tag(tags, "addr:full")
-        city = self._first_tag(tags, "addr:city", "addr:town", "addr:village", "addr:hamlet", "addr:place")
+        city = self._first_tag(
+            tags, "addr:city", "addr:town", "addr:village", "addr:hamlet", "addr:place"
+        )
         postcode = self._first_tag(tags, "addr:postcode")
         street = self._first_tag(tags, "addr:street")
         house_number = self._first_tag(tags, "addr:housenumber")
@@ -401,6 +545,8 @@ class VaresottoOSMFinder:
         if not element_type or element_id is None:
             return ""
         return f"https://www.openstreetmap.org/{element_type}/{element_id}"
+
+    # ── Dedup ──────────────────────────────────────────────────────────────────
 
     def _record_score(self, record: dict[str, Any]) -> int:
         score = 0
@@ -423,6 +569,8 @@ class VaresottoOSMFinder:
             return candidate
         return current
 
+    # ── Nominatim / Overpass ───────────────────────────────────────────────────
+
     def geocode_reference_point(self) -> None:
         data = self._search_nominatim(self.reference_query)
         if not data:
@@ -439,33 +587,32 @@ class VaresottoOSMFinder:
         }
 
     def resolve_area_id(self) -> None:
-        candidates = (
-            self.province_query,
-            "Varese, Lombardia, Italia",
+        for item in self._search_nominatim(self.province_query):
+            osm_type = item.get("osm_type")
+            osm_id = item.get("osm_id")
+            item_type = self._normalize_text(item.get("type", ""))
+            addresstype = self._normalize_text(item.get("addresstype", ""))
+            display_name = self._normalize_text(item.get("display_name", ""))
+
+            if osm_type not in {"relation", "way"} or not osm_id:
+                continue
+            if (
+                "provincia" not in display_name
+                and item_type not in {"county", "administrative"}
+                and addresstype not in {"county", "state_district"}
+            ):
+                continue
+
+            if osm_type == "relation":
+                self.area_id = 3_600_000_000 + int(osm_id)
+            else:
+                self.area_id = 2_400_000_000 + int(osm_id)
+            return
+
+        raise RuntimeError(
+            f"Impossibile determinare l'area OSM per: {self.province_query!r}. "
+            "Verifica che la query sia una provincia riconoscibile su OpenStreetMap."
         )
-
-        for query in candidates:
-            for item in self._search_nominatim(query):
-                osm_type = item.get("osm_type")
-                osm_id = item.get("osm_id")
-                display_name = self._normalize_text(item.get("display_name", ""))
-                item_type = self._normalize_text(item.get("type", ""))
-                addresstype = self._normalize_text(item.get("addresstype", ""))
-
-                if osm_type not in {"relation", "way"} or not osm_id:
-                    continue
-                if "varese" not in display_name:
-                    continue
-                if "provincia" not in display_name and item_type not in {"county", "administrative"} and addresstype not in {"county", "state_district"}:
-                    continue
-
-                if osm_type == "relation":
-                    self.area_id = 3_600_000_000 + int(osm_id)
-                else:
-                    self.area_id = 2_400_000_000 + int(osm_id)
-                return
-
-        raise RuntimeError("Impossibile determinare l'area della provincia di Varese.")
 
     def _search_nominatim(self, query: str) -> list[dict[str, Any]]:
         try:
@@ -521,7 +668,9 @@ out body center qt;
                 continue
 
         if last_error:
-            raise RuntimeError(f"Overpass non disponibile per {group.label}: {last_error}") from last_error
+            raise RuntimeError(
+                f"Overpass non disponibile per {group.label}: {last_error}"
+            ) from last_error
         raise RuntimeError(f"Overpass non disponibile per {group.label}")
 
     def _element_to_record(self, element: dict[str, Any], group: SearchGroup) -> dict[str, Any] | None:
@@ -555,9 +704,12 @@ out body center qt;
             float(lon),
         )
 
+        has_website = bool(website)
+        comp_score = self._composite_score(distance_km, has_website, category)
+
         return {
             "Data Ricerca": self.timestamp,
-            "Priorita'": self._distance_priority(distance_km),
+            "Priorita'": self._composite_priority(comp_score),
             "Distanza da Vedano Olona (km)": f"{distance_km:.2f}",
             "Categoria": category,
             "Sottocategoria": subcategory,
@@ -568,7 +720,7 @@ out body center qt;
             "Telefono": phone or "N/D",
             "Email": email or "N/D",
             "Sito Web": website or "N/D",
-            "Ha Sito Web": "SI" if website else "NO",
+            "Ha Sito Web": "SI" if has_website else "NO",
             "Opportunita' Web": self._website_opportunity(website, email),
             "Fonte": "OpenStreetMap / Overpass",
             "OSM URL": self._osm_url(element) or "N/D",
@@ -577,11 +729,147 @@ out body center qt;
             "Lon": round(float(lon), 6),
             "_lat": float(lat),
             "_lon": float(lon),
+            "_composite_score": comp_score,
         }
+
+    # ── Foursquare ─────────────────────────────────────────────────────────────
+
+    def _classify_foursquare(self, categories: list[dict[str, Any]]) -> tuple[str, str]:
+        if not categories:
+            return "Negozi", "N/D"
+        primary_name = (categories[0].get("name") or "").strip()
+        primary_lower = primary_name.lower()
+        for keyword, our_cat in _FSQ_CATEGORY_MAP:
+            if keyword in primary_lower:
+                return our_cat, primary_name
+        return "Negozi", primary_name or "N/D"
+
+    def _foursquare_to_record(self, place: dict[str, Any]) -> dict[str, Any] | None:
+        fsq_id = (place.get("fsq_id") or "").strip()
+        name = (place.get("name") or "").strip()
+        if not name or len(name) < 4:
+            return None
+
+        location = place.get("location") or {}
+        lat = location.get("lat")
+        lon = location.get("lng")
+        if lat is None or lon is None:
+            return None
+
+        lat = float(lat)
+        lon = float(lon)
+
+        if self._normalize_text(name) in GENERIC_NAMES:
+            return None
+
+        categories_list = place.get("categories") or []
+        category, subcategory = self._classify_foursquare(categories_list)
+
+        website = (place.get("website") or "").strip()
+        email = (place.get("email") or "").strip()
+        phone = (place.get("tel") or "").strip()
+
+        city = (
+            location.get("locality")
+            or location.get("town")
+            or location.get("region")
+            or ""
+        ).strip()
+        street = (location.get("address") or "").strip()
+        postcode = (location.get("postcode") or "").strip()
+        line_2 = " ".join(p for p in (postcode, city) if p).strip()
+        address = ", ".join(p for p in (street, line_2) if p).strip() or "N/D"
+
+        distance_km = self._haversine_km(
+            self.reference_point["lat"],
+            self.reference_point["lon"],
+            lat,
+            lon,
+        )
+
+        has_website = bool(website)
+        comp_score = self._composite_score(distance_km, has_website, category)
+
+        return {
+            "Data Ricerca": self.timestamp,
+            "Priorita'": self._composite_priority(comp_score),
+            "Distanza da Vedano Olona (km)": f"{distance_km:.2f}",
+            "Categoria": category,
+            "Sottocategoria": subcategory,
+            "Nome Attivita'": name,
+            "Comune": city or "N/D",
+            "Indirizzo": address,
+            "Provincia": "Varese",
+            "Telefono": phone or "N/D",
+            "Email": email or "N/D",
+            "Sito Web": website or "N/D",
+            "Ha Sito Web": "SI" if has_website else "NO",
+            "Opportunita' Web": self._website_opportunity(website, email),
+            "Fonte": "Foursquare",
+            "OSM URL": f"foursquare://{fsq_id}" if fsq_id else "N/D",
+            "Note": "Lead da Foursquare — verificare dati",
+            "Lat": round(lat, 6),
+            "Lon": round(lon, 6),
+            "_lat": lat,
+            "_lon": lon,
+            "_composite_score": comp_score,
+        }
+
+    def _fetch_foursquare(self, api_key: str) -> int:
+        """Interroga Foursquare Places API e aggiunge i risultati a self.results."""
+        radius_m = min(int(self.max_distance_km * 1000), 100_000)
+        headers = {
+            "Accept": "application/json",
+            "Authorization": api_key,
+        }
+        params: dict[str, Any] = {
+            "ll": f"{self.reference_point['lat']},{self.reference_point['lon']}",
+            "radius": radius_m,
+            "limit": 50,
+            "fields": "fsq_id,name,location,categories,tel,website,email",
+        }
+
+        added = 0
+        max_pages = 20  # cap a 1000 risultati
+
+        for page in range(max_pages):
+            try:
+                response = self.session.get(
+                    FSQ_SEARCH_URL,
+                    headers=headers,
+                    params=params,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (requests.RequestException, ValueError) as exc:
+                print(f"    ! Foursquare errore (pagina {page + 1}): {exc}")
+                break
+
+            for place in payload.get("results", []):
+                record = self._foursquare_to_record(place)
+                if record:
+                    self.results.append(record)
+                    added += 1
+
+            # Paginazione: cerca il cursore nel body o nel Link header
+            next_cursor: str | None = payload.get("cursor")
+            if not next_cursor:
+                link = response.headers.get("Link", "")
+                match = re.search(r"cursor=([^&>]+)", link)
+                next_cursor = match.group(1) if match else None
+
+            if not next_cursor:
+                break
+            params["cursor"] = next_cursor
+            time.sleep(0.5)
+
+        return added
+
+    # ── Dedup / sort / output ──────────────────────────────────────────────────
 
     def cleanup_duplicates(self) -> None:
         deduped: dict[tuple[str, float, float], dict[str, Any]] = {}
-
         for record in self.results:
             key = self._dedupe_key(record)
             current = deduped.get(key)
@@ -595,13 +883,10 @@ out body center qt;
     def sort_results(self) -> None:
         self.results.sort(
             key=lambda item: (
-                float(item["Distanza da Vedano Olona (km)"]),
-                0 if item["Ha Sito Web"] == "NO" else 1,
-                CATEGORY_ORDER.get(item["Categoria"], 99),
+                -item.get("_composite_score", 0.0),
                 self._normalize_text(item["Nome Attivita'"]),
             )
         )
-
         if self.limit > 0:
             self.results = self.results[: self.limit]
 
@@ -639,20 +924,31 @@ out body center qt;
 
     def print_summary(self) -> None:
         without_site = sum(1 for item in self.results if item["Ha Sito Web"] == "NO")
-
         per_priority: dict[str, int] = {}
         for item in self.results:
             priority = item["Priorita'"]
             per_priority[priority] = per_priority.get(priority, 0) + 1
 
+        fsq_count = sum(1 for item in self.results if item.get("Fonte") == "Foursquare")
+        osm_count = len(self.results) - fsq_count
+
         print("\n" + "=" * 78)
         print("RIEPILOGO")
         print("=" * 78)
-        print(f"Totale attivita': {len(self.results)}")
+        print(
+            f"Totale attivita': {len(self.results)}"
+            f"  (OSM: {osm_count}, Foursquare: {fsq_count})"
+        )
         print(f"Senza sito web: {without_site}")
         print(f"Con sito web:   {len(self.results) - without_site}")
-        print(f"Centro ranking: {self.reference_point['name']} ({self.reference_point['lat']:.4f}, {self.reference_point['lon']:.4f})")
-        print("\nPer priorita' distanza:")
+        print(
+            f"Centro ranking: {self.reference_point['name']} "
+            f"({self.reference_point['lat']:.4f}, {self.reference_point['lon']:.4f})"
+        )
+        if self.target_categories:
+            print(f"Categorie target: {', '.join(self.target_categories)}")
+        print(f"Distanza massima: {self.max_distance_km:.0f} km")
+        print("\nPer priorita' composita:")
         for label in ("ALTISSIMA", "ALTA", "MEDIA", "BASSA", "MOLTO BASSA"):
             print(f"  - {label:<13} {per_priority.get(label, 0)}")
         if self.failed_groups:
@@ -662,19 +958,30 @@ out body center qt;
 
     def run(self) -> None:
         print("\n" + "=" * 78)
-        print("VARESOTTO CLIENT FINDER - OSM/OVERPASS")
+        print("MORPHEUS — RACCOLTA LEAD OSM/OVERPASS + FOURSQUARE")
         print("=" * 78)
         print(f"Avvio: {self.timestamp}")
 
-        print(f"\n[1/4] Geocodifico il centro di priorita': {self.reference_query}")
+        print(f"\n[1/5] Geocodifico il centro di priorita': {self.reference_query}")
+        self._notify_progress("geocode", 5, f"Geocodifico il centro: {self.reference_query}")
         self.geocode_reference_point()
 
-        print(f"[2/4] Individuo l'area OSM della provincia: {self.province_query}")
+        print(f"[2/5] Individuo l'area OSM della provincia: {self.province_query}")
+        self._notify_progress("resolve_area", 10, f"Individuo l'area OSM: {self.province_query}")
         self.resolve_area_id()
 
-        print("[3/4] Raccolgo attivita' commerciali nella provincia di Varese")
+        print("[3/5] Raccolgo attivita' commerciali via Overpass")
         for index, group in enumerate(SEARCH_GROUPS, start=1):
             print(f"  - Query {index}/{len(SEARCH_GROUPS)}: {group.label}")
+            query_progress = 15 + int(((index - 1) / len(SEARCH_GROUPS)) * 55)
+            self._notify_progress(
+                "fetch_group",
+                query_progress,
+                f"Query {index}/{len(SEARCH_GROUPS)}: {group.label}",
+                current_group=group.label,
+                current_index=index,
+                total_groups=len(SEARCH_GROUPS),
+            )
             try:
                 elements = self._fetch_group(group)
             except RuntimeError as exc:
@@ -688,20 +995,51 @@ out body center qt;
                     self.results.append(record)
                     added += 1
             print(f"    -> elementi utili: {added}")
+            self._notify_progress(
+                "fetch_group_done",
+                15 + int((index / len(SEARCH_GROUPS)) * 55),
+                f"{group.label}: {added} elementi utili",
+                current_group=group.label,
+                current_index=index,
+                total_groups=len(SEARCH_GROUPS),
+                added=added,
+            )
             time.sleep(1)
 
+        print("[4/5] Integro dati Foursquare Places")
+        fsq_key = os.environ.get("FSQ_API_KEY", "").strip()
+        if fsq_key:
+            self._notify_progress("foursquare", 72, "Integro dati Foursquare...")
+            fsq_added = self._fetch_foursquare(fsq_key)
+            print(f"  -> Foursquare: {fsq_added} attivita' aggiunte")
+        else:
+            print("  ! FSQ_API_KEY non impostata, skip Foursquare")
+        self._notify_progress("foursquare_done", 76, "Foursquare completato")
+
+        self._notify_progress("dedupe", 80, "Pulisco duplicati e ordino i lead")
         self.cleanup_duplicates()
         self.sort_results()
 
-        print(f"[4/4] Salvo il CSV ordinato per vicinanza in {project_relative(self.output_file)}")
+        print(f"[5/5] Salvo il CSV ordinato per score in {project_relative(self.output_file)}")
+        self._notify_progress("save_csv", 90, "Salvo il CSV del popolamento")
         self.save_csv()
+        self._notify_progress("summary", 97, "Calcolo il riepilogo finale")
         self.print_summary()
-        print("\nCSV pronto. I primi record sono i prospect piu' vicini a Vedano Olona.")
+        self._notify_progress(
+            "done",
+            100,
+            f"Popolamento completato: {len(self.results)} attivita' trovate",
+            total_results=len(self.results),
+        )
+        print(
+            "\nCSV pronto. I lead sono ordinati per score composito"
+            " (distanza + assenza sito + categoria)."
+        )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Trova attivita' commerciali nella provincia di Varese ordinate per distanza da Vedano Olona."
+        description="Morpheus: trova attivita' commerciali in una provincia, ordinate per score composito."
     )
     parser.add_argument(
         "--province",
@@ -724,16 +1062,33 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Numero massimo di righe da salvare dopo l'ordinamento. 0 = nessun limite.",
     )
+    parser.add_argument(
+        "--categories",
+        nargs="+",
+        default=None,
+        help=(
+            "Categorie target per lo scoring (es. Ristorazione Artigiani). "
+            "Default: da SCORING_CATEGORIES env."
+        ),
+    )
+    parser.add_argument(
+        "--max-distance",
+        type=float,
+        default=None,
+        help=f"Distanza massima in km per la normalizzazione (default: {DEFAULT_MAX_DISTANCE_KM}).",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    finder = VaresottoOSMFinder(
+    finder = MorpheusFinder(
         province_query=args.province,
         reference_query=args.reference,
         output_file=args.output,
         limit=args.limit,
+        target_categories=args.categories,
+        max_distance_km=args.max_distance,
     )
     finder.run()
     return 0

@@ -5,7 +5,7 @@ from _bootstrap import bootstrap_project
 
 bootstrap_project()
 
-from finder_clienti_varesotto.varesotto_linkedin import LinkedInClientFinder
+from morpheus.varesotto_linkedin import LinkedInClientFinder
 
 
 if __name__ == "__main__":

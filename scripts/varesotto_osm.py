@@ -5,7 +5,7 @@ from _bootstrap import bootstrap_project
 
 bootstrap_project()
 
-from finder_clienti_varesotto.varesotto_osm import main
+from morpheus.varesotto_osm import main
 
 
 if __name__ == "__main__":

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import csv
+import io
 import re
 import sqlite3
 import unicodedata
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Generator
 
 from .paths import (
     DB_PATH,
@@ -21,6 +22,30 @@ from .varesotto_osm import (
     DEFAULT_REFERENCE_QUERY,
     MorpheusFinder,
 )
+
+JOBS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id      TEXT PRIMARY KEY,
+    job_type    TEXT NOT NULL DEFAULT 'populate',
+    status      TEXT NOT NULL DEFAULT 'queued',
+    progress    INTEGER DEFAULT 0,
+    stage       TEXT DEFAULT '',
+    message     TEXT DEFAULT '',
+    error       TEXT DEFAULT '',
+    dataset_id  TEXT DEFAULT '',
+    result_json TEXT DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+"""
+
+INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_attivita_dataset ON attivita(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_attivita_dataset_priorita ON attivita(dataset_id, priorita);
+CREATE INDEX IF NOT EXISTS idx_attivita_dataset_comune ON attivita(dataset_id, comune);
+CREATE INDEX IF NOT EXISTS idx_attivita_dataset_facebook ON attivita(dataset_id, facebook_url);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+"""
 
 ATTIVITA_SCHEMA = """
 CREATE TABLE IF NOT EXISTS attivita (
@@ -37,6 +62,7 @@ CREATE TABLE IF NOT EXISTS attivita (
     telefono              TEXT,
     email                 TEXT,
     sito                  TEXT,
+    facebook_url          TEXT DEFAULT '',
     ha_sito               TEXT,
     stato                 TEXT DEFAULT '',
     proposta              TEXT DEFAULT '',
@@ -78,6 +104,7 @@ ATTIVITA_COLUMNS = (
     "telefono",
     "email",
     "sito",
+    "facebook_url",
     "ha_sito",
     "stato",
     "proposta",
@@ -96,6 +123,7 @@ OPTIONAL_COLUMNS = {
     "rilevanza_motivazione": "ALTER TABLE attivita ADD COLUMN rilevanza_motivazione TEXT DEFAULT ''",
     "dataset_id": "ALTER TABLE attivita ADD COLUMN dataset_id TEXT DEFAULT ''",
     "source_osm_url": "ALTER TABLE attivita ADD COLUMN source_osm_url TEXT DEFAULT ''",
+    "facebook_url": "ALTER TABLE attivita ADD COLUMN facebook_url TEXT DEFAULT ''",
 }
 
 LEGACY_DATASET_ID = "vedano-olona-varese-lombardia-italia"
@@ -134,6 +162,29 @@ def _merge_text_values(existing: str, new_value: str, *, separator: str = " | ")
             if cleaned and cleaned not in values:
                 values.append(cleaned)
     return separator.join(values)
+
+
+def _clean_merge_value(value: str | None) -> str:
+    cleaned = str(value or "").strip()
+    return "" if cleaned in {"", "N/D"} else cleaned
+
+
+def _norm_dedup(nome: str, lat: float | None, lon: float | None) -> tuple:
+    return (
+        _slugify(nome),
+        round(lat, 3) if lat is not None else None,
+        round(lon, 3) if lon is not None else None,
+    )
+
+
+def _merge_distinct_values(existing: str | None, new_value: str | None) -> str:
+    values: list[str] = []
+    for raw_value in (existing, new_value):
+        for item in str(raw_value or "").split(" | "):
+            cleaned = _clean_merge_value(item)
+            if cleaned and cleaned not in values:
+                values.append(cleaned)
+    return " | ".join(values)
 
 
 def _ensure_optional_columns(conn: sqlite3.Connection) -> None:
@@ -190,6 +241,8 @@ def init_db(db_path: Path = DB_PATH) -> None:
     conn = sqlite3.connect(db_path)
     conn.executescript(ATTIVITA_SCHEMA)
     conn.executescript(DATASET_SCHEMA)
+    conn.executescript(JOBS_SCHEMA)
+    conn.executescript(INDEXES_SQL)
     _ensure_optional_columns(conn)
     _bootstrap_legacy_dataset(conn)
     conn.commit()
@@ -324,6 +377,16 @@ def import_from_csv(
         ).fetchall()
     }
 
+    existing_fingerprints: set[tuple] = set()
+    if not replace_dataset:
+        existing_fingerprints = {
+            _norm_dedup(r[0], r[1], r[2])
+            for r in conn.execute(
+                "SELECT nome, lat, lon FROM attivita WHERE dataset_id = ? AND lat IS NOT NULL AND lon IS NOT NULL",
+                (resolved_dataset_id,),
+            ).fetchall()
+        }
+
     hotlist: dict[str, dict] = {}
     if hotlist_csv.exists():
         with hotlist_csv.open(encoding="utf-8-sig", newline="") as handle:
@@ -334,6 +397,8 @@ def import_from_csv(
 
     rows = []
     seen_ids: dict[str, int] = {}
+    seen_in_batch: set[tuple] = set()
+    skipped_dedup = 0
     with osm_csv.open(encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
             nome = (row.get("Nome Attivita'") or "").strip()
@@ -367,6 +432,13 @@ def import_from_csv(
             ha_sito = "SI" if sito else "NO"
             rilevanza_score, rilevanza_motivazione = existing_scores.get(record_id, (None, ""))
 
+            fp = _norm_dedup(nome, lat, lon)
+            if fp in existing_fingerprints or fp in seen_in_batch:
+                skipped_dedup += 1
+                continue
+            if lat is not None and lon is not None:
+                seen_in_batch.add(fp)
+
             rows.append(
                 (
                     record_id,
@@ -382,6 +454,7 @@ def import_from_csv(
                     (hotlist_row.get("Telefono") or row.get("Telefono") or "").strip(),
                     (hotlist_row.get("Email") or row.get("Email") or "").strip(),
                     sito or "N/D",
+                    "",
                     ha_sito,
                     hotlist_row.get("Stato", ""),
                     hotlist_row.get("Proposta Mirata Base", ""),
@@ -479,9 +552,10 @@ def import_from_csv(
     ).fetchone()[0]
     conn.close()
 
+    dedup_msg = f", {skipped_dedup} duplicati saltati" if skipped_dedup else ""
     print(
         f"  Importate {dataset_count} attività nel dataset '{resolved_dataset_id}' "
-        f"({with_coords} con coordinate, {in_hotlist} in hotlist, {with_scores} con score LLM)"
+        f"({with_coords} con coordinate, {in_hotlist} in hotlist, {with_scores} con score LLM{dedup_msg})"
     )
     return dataset_count
 
@@ -493,6 +567,7 @@ def query_leads(
     solo_hotlist: bool = False,
     comune: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
     dataset_id: str | None = None,
     db_path: Path = DB_PATH,
 ) -> list[dict]:
@@ -537,6 +612,9 @@ def query_leads(
     if limit and limit > 0:
         sql += " LIMIT ?"
         params.append(limit)
+        if offset and offset > 0:
+            sql += " OFFSET ?"
+            params.append(offset)
 
     rows = conn.execute(sql, params).fetchall()
     conn.close()
@@ -573,6 +651,84 @@ def update_rilevanza_score(
         WHERE osm_url = ?
         """,
         (score, motivazione, datetime.now().isoformat(), osm_url),
+    )
+    conn.commit()
+    conn.close()
+
+
+def merge_lead_enrichment(
+    osm_url: str,
+    *,
+    telefono: str = "",
+    email: str = "",
+    sito: str = "",
+    facebook_url: str = "",
+    db_path: Path = DB_PATH,
+) -> dict | None:
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """
+        SELECT osm_url, dataset_id, telefono, email, sito, facebook_url, ha_sito
+        FROM attivita
+        WHERE osm_url = ?
+        """,
+        (osm_url,),
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    merged_phone = _merge_distinct_values(row["telefono"], telefono)
+    merged_email = _merge_distinct_values(row["email"], email)
+    merged_site = _merge_distinct_values(row["sito"], sito)
+    merged_facebook = _merge_distinct_values(row["facebook_url"], facebook_url)
+    ha_sito = "SI" if merged_site else "NO"
+    updated_at = datetime.now().isoformat()
+
+    conn.execute(
+        """
+        UPDATE attivita
+        SET telefono = ?,
+            email = ?,
+            sito = ?,
+            facebook_url = ?,
+            ha_sito = ?,
+            aggiornato_il = ?
+        WHERE osm_url = ?
+        """,
+        (
+            merged_phone or "N/D",
+            merged_email or "N/D",
+            merged_site or "N/D",
+            merged_facebook,
+            ha_sito,
+            updated_at,
+            osm_url,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "osm_url": osm_url,
+        "dataset_id": row["dataset_id"] or "",
+        "telefono": merged_phone,
+        "email": merged_email,
+        "sito": merged_site,
+        "facebook_url": merged_facebook,
+        "ha_sito": ha_sito,
+    }
+
+
+def touch_dataset(dataset_id: str, db_path: Path = DB_PATH) -> None:
+    if not dataset_id:
+        return
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE dataset_runs SET updated_at = ? WHERE dataset_id = ?",
+        (datetime.now().isoformat(), dataset_id),
     )
     conn.commit()
     conn.close()
@@ -622,6 +778,148 @@ def get_active_dataset(db_path: Path = DB_PATH, dataset_id: str | None = None) -
     dataset = _get_dataset_summary(conn, resolved_dataset_id)
     conn.close()
     return dataset
+
+
+def save_job(
+    job_id: str,
+    payload: dict,
+    *,
+    job_type: str = "populate",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Upsert a job record; merges payload over existing state."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    now = datetime.now().isoformat()
+    existing = conn.execute(
+        "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    if existing:
+        base = dict(existing)
+    else:
+        base = {
+            "job_id": job_id,
+            "job_type": job_type,
+            "status": "queued",
+            "progress": 0,
+            "stage": "",
+            "message": "",
+            "error": "",
+            "dataset_id": "",
+            "result_json": "",
+            "created_at": now,
+        }
+    for key, value in payload.items():
+        if key in base and value is not None:
+            if key == "result_json" and not isinstance(value, str):
+                import json as _json
+                base[key] = _json.dumps(value)
+            else:
+                base[key] = value
+    base["updated_at"] = now
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO jobs
+          (job_id, job_type, status, progress, stage, message, error,
+           dataset_id, result_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            base["job_id"],
+            base.get("job_type", job_type),
+            base["status"],
+            base.get("progress", 0),
+            base.get("stage", ""),
+            base.get("message", ""),
+            base.get("error", ""),
+            base.get("dataset_id", ""),
+            base.get("result_json", ""),
+            base["created_at"],
+            base["updated_at"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_job(job_id: str, db_path: Path = DB_PATH) -> dict | None:
+    """Return a job record as dict, or None if not found."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    result = dict(row)
+    if result.get("result_json"):
+        import json as _json
+        try:
+            result["_result"] = _json.loads(result["result_json"])
+        except Exception:
+            result["_result"] = {}
+    return result
+
+
+def mark_stale_jobs(db_path: Path = DB_PATH) -> None:
+    """Mark jobs that were running/queued at shutdown as interrupted."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        UPDATE jobs
+        SET status = 'interrupted',
+            message = 'Il server si è riavviato mentre il job era in esecuzione.',
+            updated_at = ?
+        WHERE status IN ('running', 'queued')
+        """,
+        (datetime.now().isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def fetch_facebook_candidates(
+    dataset_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_path: Path = DB_PATH,
+) -> list[dict]:
+    """Return leads without a facebook_url for enrichment."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    resolved_dataset_id = _resolve_dataset_id(conn, dataset_id)
+    if not resolved_dataset_id:
+        conn.close()
+        return []
+    rows = conn.execute(
+        """
+        SELECT osm_url, nome, comune, categoria, sottocategoria
+        FROM attivita
+        WHERE dataset_id = ?
+          AND (facebook_url IS NULL OR facebook_url = '')
+        ORDER BY CASE priorita
+          WHEN 'ALTISSIMA' THEN 1
+          WHEN 'ALTA' THEN 2
+          WHEN 'MEDIA' THEN 3
+          WHEN 'BASSA' THEN 4
+          ELSE 5 END, distanza_km, nome
+        LIMIT ? OFFSET ?
+        """,
+        (resolved_dataset_id, limit, offset),
+    ).fetchall()
+    total = conn.execute(
+        """
+        SELECT COUNT(*) FROM attivita
+        WHERE dataset_id = ?
+          AND (facebook_url IS NULL OR facebook_url = '')
+        """,
+        (resolved_dataset_id,),
+    ).fetchone()[0]
+    conn.close()
+    return [dict(r) | {"_total_candidates": total} for r in rows]
 
 
 def create_dataset_from_reference(
@@ -677,3 +975,208 @@ def create_dataset_from_reference(
     if dataset is None:
         raise RuntimeError(f"Dataset non creato correttamente: {resolved_dataset_id}")
     return dataset
+
+
+# ── Lead editing ──────────────────────────────────────────────────────────────
+
+_LEAD_EDITABLE_FIELDS = {
+    "stato",
+    "proposta",
+    "rating",
+    "in_hotlist",
+    "email",
+    "telefono",
+    "sito",
+    "criticita",
+}
+
+
+def update_lead_fields(
+    osm_url: str,
+    updates: dict[str, Any],
+    db_path: Path = DB_PATH,
+) -> dict | None:
+    """Partial update of editable fields on a single lead.
+
+    Only keys present in *updates* AND in the whitelist are written.
+    Recomputes ``ha_sito`` when ``sito`` is changed.
+    Returns the full updated row as a dict, or ``None`` if the lead was not found.
+    """
+    allowed = {k: v for k, v in updates.items() if k in _LEAD_EDITABLE_FIELDS and v is not None}
+    if not allowed:
+        # Nothing to update — still return the current row so caller gets a 200.
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM attivita WHERE osm_url = ?", (osm_url,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    row = conn.execute("SELECT * FROM attivita WHERE osm_url = ?", (osm_url,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    # Normalise special values
+    if "in_hotlist" in allowed:
+        allowed["in_hotlist"] = 1 if allowed["in_hotlist"] else 0
+    if "sito" in allowed:
+        sito_val = str(allowed["sito"]).strip()
+        allowed["sito"] = sito_val or "N/D"
+        allowed["ha_sito"] = "SI" if sito_val and sito_val != "N/D" else "NO"
+
+    allowed["aggiornato_il"] = datetime.now().isoformat()
+
+    set_clause = ", ".join(f"{col} = ?" for col in allowed)
+    values = list(allowed.values()) + [osm_url]
+    conn.execute(f"UPDATE attivita SET {set_clause} WHERE osm_url = ?", values)
+    conn.commit()
+
+    updated = conn.execute("SELECT * FROM attivita WHERE osm_url = ?", (osm_url,)).fetchone()
+    conn.close()
+    return dict(updated) if updated else None
+
+
+def update_leads_bulk(
+    osm_urls: list[str],
+    updates: dict[str, Any],
+    db_path: Path = DB_PATH,
+) -> int:
+    """Update a set of leads with the same field values. Returns count of rows updated."""
+    allowed = {k: v for k, v in updates.items() if k in _LEAD_EDITABLE_FIELDS and v is not None}
+    if not allowed or not osm_urls:
+        return 0
+
+    if "in_hotlist" in allowed:
+        allowed["in_hotlist"] = 1 if allowed["in_hotlist"] else 0
+    if "sito" in allowed:
+        sito_val = str(allowed["sito"]).strip()
+        allowed["sito"] = sito_val or "N/D"
+        allowed["ha_sito"] = "SI" if sito_val and sito_val != "N/D" else "NO"
+
+    allowed["aggiornato_il"] = datetime.now().isoformat()
+
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    set_clause = ", ".join(f"{col} = ?" for col in allowed)
+    placeholders = ",".join("?" * len(osm_urls))
+    values = list(allowed.values()) + list(osm_urls)
+    cursor = conn.execute(
+        f"UPDATE attivita SET {set_clause} WHERE osm_url IN ({placeholders})",
+        values,
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
+# ── Dataset deletion ───────────────────────────────────────────────────────────
+
+def delete_dataset(
+    dataset_id: str,
+    db_path: Path = DB_PATH,
+) -> dict:
+    """Delete a dataset and all its leads. Returns counts."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    lead_count = conn.execute(
+        "SELECT COUNT(*) FROM attivita WHERE dataset_id = ?", (dataset_id,)
+    ).fetchone()[0]
+    conn.execute("DELETE FROM attivita WHERE dataset_id = ?", (dataset_id,))
+    conn.execute("DELETE FROM dataset_runs WHERE dataset_id = ?", (dataset_id,))
+    conn.commit()
+    conn.close()
+    return {"dataset_id": dataset_id, "deleted_leads": lead_count}
+
+
+# ── Distinct comuni ────────────────────────────────────────────────────────────
+
+def list_comuni(
+    dataset_id: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[str]:
+    """Return sorted distinct *comune* values for a dataset (or the active one)."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    resolved = _resolve_dataset_id(conn, dataset_id)
+    if not resolved:
+        conn.close()
+        return []
+    rows = conn.execute(
+        """
+        SELECT DISTINCT comune FROM attivita
+        WHERE dataset_id = ? AND comune IS NOT NULL AND comune != '' AND comune != 'N/D'
+        ORDER BY comune
+        """,
+        (resolved,),
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+# ── CSV export ─────────────────────────────────────────────────────────────────
+
+_EXPORT_COLUMNS = (
+    "nome",
+    "comune",
+    "categoria",
+    "sottocategoria",
+    "indirizzo",
+    "telefono",
+    "email",
+    "sito",
+    "facebook_url",
+    "priorita",
+    "distanza_km",
+    "ha_sito",
+    "stato",
+    "proposta",
+    "rating",
+)
+
+
+def export_leads_csv(
+    dataset_id: str | None = None,
+    *,
+    priorita: list[str] | None = None,
+    categoria: list[str] | None = None,
+    solo_senza_sito: bool = False,
+    solo_hotlist: bool = False,
+    comune: str | None = None,
+    db_path: Path = DB_PATH,
+) -> Generator[str, None, None]:
+    """Yield CSV rows (header + data) for the filtered leads."""
+    leads = query_leads(
+        priorita=priorita,
+        categoria=categoria,
+        solo_senza_sito=solo_senza_sito,
+        solo_hotlist=solo_hotlist,
+        comune=comune,
+        limit=50_000,
+        dataset_id=dataset_id,
+        db_path=db_path,
+    )
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_EXPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    yield buf.getvalue()
+    buf.seek(0)
+    buf.truncate(0)
+
+    for lead in leads:
+        row = {col: lead.get(col, "") or "" for col in _EXPORT_COLUMNS}
+        if "distanza_km" in row and row["distanza_km"]:
+            try:
+                row["distanza_km"] = f"{float(row['distanza_km']):.2f}"
+            except (TypeError, ValueError):
+                pass
+        writer.writerow(row)
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)

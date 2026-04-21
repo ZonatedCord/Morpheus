@@ -20,5 +20,8 @@ data/output/
 # Claude Code
 .claude/
 
+# Note di sessione personali
+context.md
+
 # Script pycache
 scripts/__pycache__/

@@ -25,6 +25,9 @@ _FB_SKIP_SLUGS = frozenset({
 
 
 def _slug_to_name(slug: str) -> str:
+    # If no separators, preserve original casing (e.g. "CartoleriaMarina")
+    if not re.search(r"[-_.]", slug):
+        return slug.strip()
     name = re.sub(r"[-_.]", " ", slug).strip()
     return " ".join(word.capitalize() for word in name.split() if word)
 

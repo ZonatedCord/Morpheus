@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 import sqlite3
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Generator
+from uuid import uuid4
 
 from .paths import (
     DB_PATH,
@@ -1092,6 +1094,115 @@ def delete_dataset(
     conn.commit()
     conn.close()
     return {"dataset_id": dataset_id, "deleted_leads": lead_count}
+
+
+# ── Manual lead creation ──────────────────────────────────────────────────────
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return round(r * 2 * math.asin(math.sqrt(a)), 2)
+
+
+def _score_to_priority(score: float) -> str:
+    if score >= 0.75:
+        return "ALTISSIMA"
+    if score >= 0.55:
+        return "ALTA"
+    if score >= 0.35:
+        return "MEDIA"
+    if score >= 0.20:
+        return "BASSA"
+    return "MOLTO BASSA"
+
+
+def create_manual_lead(
+    dataset_id: str,
+    fields: dict[str, Any],
+    db_path: Path = DB_PATH,
+) -> dict | None:
+    """Insert a manually-entered lead into the given dataset.
+
+    Returns the full row as dict, or None if dataset not found or nome missing.
+    """
+    nome = (fields.get("nome") or "").strip()
+    if not nome:
+        return None
+
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    dataset_row = conn.execute(
+        "SELECT reference_lat, reference_lon FROM dataset_runs WHERE dataset_id = ?",
+        (dataset_id,),
+    ).fetchone()
+    if dataset_row is None:
+        conn.close()
+        return None
+
+    ref_lat = dataset_row["reference_lat"]
+    ref_lon = dataset_row["reference_lon"]
+
+    try:
+        lat = float(fields["lat"]) if fields.get("lat") not in (None, "") else None
+        lon = float(fields["lon"]) if fields.get("lon") not in (None, "") else None
+    except (TypeError, ValueError):
+        lat = lon = None
+
+    sito = (fields.get("sito") or "").strip()
+    if sito == "N/D":
+        sito = ""
+    ha_sito = "SI" if sito else "NO"
+
+    distanza_km = 0.0
+    priorita = "BASSA"
+    if lat is not None and lon is not None and ref_lat is not None and ref_lon is not None:
+        distanza_km = _haversine_km(ref_lat, ref_lon, lat, lon)
+        max_dist = 50.0
+        dist_norm = max(0.0, 1.0 - distanza_km / max_dist)
+        assenza_sito = 1.0 if ha_sito == "NO" else 0.0
+        score = 0.5 * dist_norm + 0.3 * assenza_sito
+        priorita = _score_to_priority(score)
+
+    osm_url = f"manual://{uuid4().hex}"
+    now = datetime.now().isoformat()
+
+    conn.execute(
+        """
+        INSERT INTO attivita (
+            osm_url, nome, lat, lon, priorita, distanza_km, categoria,
+            sottocategoria, comune, indirizzo, telefono, email, sito,
+            facebook_url, ha_sito, stato, proposta, criticita, rating,
+            in_hotlist, rilevanza_score, rilevanza_motivazione,
+            dataset_id, source_osm_url, aggiornato_il
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            osm_url, nome, lat, lon, priorita, distanza_km,
+            (fields.get("categoria") or "").strip(),
+            "",
+            (fields.get("comune") or "").strip(),
+            (fields.get("indirizzo") or "").strip(),
+            (fields.get("telefono") or "").strip(),
+            (fields.get("email") or "").strip(),
+            sito or "N/D",
+            (fields.get("facebook_url") or "").strip(),
+            ha_sito,
+            "", "", "", "", 0, None, "",
+            dataset_id, "manual", now,
+        ),
+    )
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM attivita WHERE osm_url = ?", (osm_url,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ── Distinct comuni ────────────────────────────────────────────────────────────

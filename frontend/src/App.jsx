@@ -361,6 +361,8 @@ export default function App() {
     lat: "", lon: "", telefono: "", email: "", sito: "", facebook_url: ""
   });
   const [saveLeadLoading, setSaveLeadLoading] = useState(false);
+  const [geocodeLoading, setGeocodeLoading] = useState(false);
+  const [geocodeError, setGeocodeError] = useState("");
 
   const activeDataset = useMemo(
     () => datasets.find((dataset) => dataset.datasetId === activeDatasetId) || datasets[0] || null,
@@ -1050,6 +1052,27 @@ export default function App() {
     }
   }
 
+  async function handleGeocode() {
+    const q = [manualForm.indirizzo, manualForm.comune].filter(Boolean).join(", ").trim();
+    if (!q) return;
+    setGeocodeLoading(true);
+    setGeocodeError("");
+    try {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setGeocodeError(data.error || "Indirizzo non trovato");
+      } else {
+        setManualForm((f) => ({ ...f, lat: String(data.lat), lon: String(data.lon) }));
+        setGeocodeError("");
+      }
+    } catch {
+      setGeocodeError("Errore di rete");
+    } finally {
+      setGeocodeLoading(false);
+    }
+  }
+
   async function handleStartFacebookEnrichment() {
     if (!activeDatasetId) return;
     setFacebookLoading(true);
@@ -1668,9 +1691,6 @@ export default function App() {
                 {[
                   { label: "Nome *", key: "nome", type: "text" },
                   { label: "Comune", key: "comune", type: "text" },
-                  { label: "Indirizzo", key: "indirizzo", type: "text" },
-                  { label: "Lat", key: "lat", type: "number" },
-                  { label: "Lon", key: "lon", type: "number" },
                   { label: "Telefono", key: "telefono", type: "text" },
                   { label: "Email", key: "email", type: "text" },
                   { label: "Sito web", key: "sito", type: "text" },
@@ -1687,6 +1707,44 @@ export default function App() {
                     />
                   </div>
                 ))}
+                <div style={{ marginBottom: "8px" }}>
+                  <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Indirizzo</div>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <input
+                      type="text"
+                      className="field"
+                      placeholder="Via Roma 1, Varese"
+                      value={manualForm.indirizzo}
+                      onChange={(e) => setManualForm((f) => ({ ...f, indirizzo: e.target.value }))}
+                      style={{ marginBottom: 0, flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleGeocode}
+                      disabled={geocodeLoading || (!manualForm.indirizzo && !manualForm.comune)}
+                      title="Ricava coordinate dall'indirizzo"
+                      style={{ padding: "0 10px", fontSize: "11px", fontWeight: 600, background: "var(--accent-light)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+                    >
+                      {geocodeLoading ? "..." : "📍 Geocodifica"}
+                    </button>
+                  </div>
+                  {geocodeError && <div style={{ fontSize: "11px", color: "var(--danger)", marginTop: "3px" }}>{geocodeError}</div>}
+                </div>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Lat</div>
+                    <input type="number" className="field" value={manualForm.lat} onChange={(e) => setManualForm((f) => ({ ...f, lat: e.target.value }))} style={{ marginBottom: 0 }} placeholder="45.7755" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Lon</div>
+                    <input type="number" className="field" value={manualForm.lon} onChange={(e) => setManualForm((f) => ({ ...f, lon: e.target.value }))} style={{ marginBottom: 0 }} placeholder="8.8872" />
+                  </div>
+                </div>
+                {manualForm.lat && manualForm.lon && (
+                  <div style={{ fontSize: "11px", color: "var(--accent)", marginBottom: "8px" }}>
+                    ✓ Coordinate: {parseFloat(manualForm.lat).toFixed(4)}, {parseFloat(manualForm.lon).toFixed(4)}
+                  </div>
+                )}
                 <div style={{ marginBottom: "12px" }}>
                   <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Categoria</div>
                   <select

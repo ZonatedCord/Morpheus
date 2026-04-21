@@ -40,7 +40,7 @@ from morpheus.db import (
 )
 from morpheus.facebook_enrichment import enrich_leads_facebook
 from morpheus.site_checker import check_sites_batch
-from morpheus.url_parser import parse_lead_url
+from morpheus.url_parser import geocode_address, parse_lead_url
 from morpheus.paths import DB_PATH, DEFAULT_HOTLIST, DEFAULT_OSM_OUTPUT
 from morpheus.varesotto_osm import DEFAULT_PROVINCE_QUERY
 
@@ -1325,6 +1325,18 @@ def api_stats():
             "by_priority": by_priority,
         }
     )
+
+
+@app.route("/api/geocode")
+def api_geocode():
+    """Geocode a free-text address via Nominatim."""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"error": "q è obbligatorio"}), 400
+    result = geocode_address(q)
+    if result is None:
+        return jsonify({"error": "Indirizzo non trovato"}), 404
+    return jsonify(result)
 
 
 @app.route("/api/leads/parse-url", methods=["POST"])

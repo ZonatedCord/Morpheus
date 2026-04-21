@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from morpheus.db import dataset_id_from_reference, import_from_csv, init_db
 from morpheus.paths import DB_PATH, DEFAULT_HOTLIST, DEFAULT_OSM_OUTPUT
-from morpheus.varesotto_osm import DEFAULT_PROVINCE_QUERY, DEFAULT_REFERENCE_QUERY
+from morpheus.osm_finder import DEFAULT_PROVINCE_QUERY, DEFAULT_REFERENCE_QUERY
 
 
 def main() -> None:
@@ -53,7 +53,7 @@ def main() -> None:
 
     if not args.osm.exists():
         print(f"ERRORE: CSV base non trovato: {args.osm}")
-        print("Esegui prima: .venv/bin/python3 scripts/varesotto_osm.py")
+        print("Avvia prima una scansione dall'interfaccia web o usa app.py.")
         sys.exit(1)
 
     if not args.hotlist.exists():

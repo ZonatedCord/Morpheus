@@ -18,7 +18,7 @@ from .paths import (
     OSM_RUNS_DIR,
     ensure_parent_dir,
 )
-from .varesotto_osm import (
+from .osm_finder import (
     DEFAULT_PROVINCE_QUERY,
     DEFAULT_REFERENCE_POINT,
     DEFAULT_REFERENCE_QUERY,

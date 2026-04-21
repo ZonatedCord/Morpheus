@@ -1,15 +1,24 @@
+# Environment
+.env
 .DS_Store
+
+# Python
 .venv/
 venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Data — database e output reali
 data/leads.db
-data/output/linkedin/*.csv
-data/output/osm/*.csv
-data/output/osm/*.xlsx
-data/output/outreach/*.csv
-data/output/outreach/*.md
-data/output/research/*.csv
-data/output/research/*.md
-.env
+data/output/
+
+# Claude Code
+.claude/
+
+# Script pycache
+scripts/__pycache__/

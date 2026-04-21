@@ -678,6 +678,45 @@ button:disabled {
   flex-shrink: 0;
 }
 
+/* ─── LAYER TOGGLE (angolo mappa, stile Google Maps) ─────── */
+.map-layer-toggle {
+  position: absolute;
+  bottom: 24px;
+  right: 12px;
+  z-index: 800;
+  display: flex;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+.layer-btn {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border: none;
+  background: rgba(255,255,255,0.95);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.layer-btn + .layer-btn {
+  border-left: 1px solid var(--border);
+}
+
+.layer-btn.active {
+  background: var(--brand);
+  color: #fff;
+}
+
+.layer-btn:hover:not(.active) {
+  background: var(--brand-light);
+  color: var(--brand);
+}
+
 .map-stage {
   position: relative;
   flex: 1;
@@ -944,6 +983,15 @@ button:disabled {
   color: var(--gray-700);
 }
 
+.lead-card-address {
+  font-size: 10px;
+  color: var(--gray-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
 .lead-card-muted {
   display: flex;
   justify-content: space-between;
@@ -957,6 +1005,197 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ─── STATO BUTTONS ────────────────────────────────────────── */
+.lead-card-stato {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.stato-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  user-select: none;
+}
+
+.stato-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.lead-card.scartata {
+  opacity: 0.45;
+}
+
+.lead-card.scartata .lead-card-name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.stato-btn.stato-scartata.active {
+  background: var(--gray-200);
+  border-color: var(--gray-500);
+  color: var(--gray-600);
+}
+
+/* ─── SCORE SLIDERS ───────────────────────────────────────── */
+.score-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.score-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  cursor: default;
+}
+
+.score-slider-label {
+  width: 90px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.score-slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.score-slider-val {
+  width: 16px;
+  text-align: right;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.stato-btn.stato-contattata.active {
+  background: var(--green-100);
+  border-color: var(--green-600);
+  color: var(--green-600);
+}
+
+.stato-btn.stato-rifiutata.active {
+  background: var(--red-100);
+  border-color: var(--red-600);
+  color: var(--red-600);
+}
+
+/* ─── LEAD CARD OUTER (bulk wrapper) ─────────────────────── */
+.lead-card-outer {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.bulk-checkbox {
+  margin-top: 10px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.lead-card-outer:hover .bulk-checkbox,
+.lead-card-outer .bulk-checkbox:checked {
+  opacity: 1;
+}
+
+.lead-card-outer .lead-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.lead-card-outer.bulk-selected .bulk-checkbox {
+  opacity: 1;
+}
+
+.lead-card-outer.bulk-selected .lead-card {
+  background: var(--blue-50);
+  border-color: var(--blue-600);
+}
+
+/* ─── BULK ACTION BAR ─────────────────────────────────────── */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--accent);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.bulk-bar-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--white);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.bulk-action-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.15);
+  color: var(--white);
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.bulk-action-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+.bulk-action-btn.bulk-ok {
+  background: rgba(22, 163, 74, 0.6);
+  border-color: rgba(22, 163, 74, 0.9);
+}
+
+.bulk-action-btn.bulk-no {
+  background: rgba(220, 38, 38, 0.5);
+  border-color: rgba(220, 38, 38, 0.8);
+}
+
+/* ─── BULK SELECT ALL ─────────────────────────────────────── */
+.bulk-select-all {
+  padding: 2px 8px 4px;
+  flex-shrink: 0;
+}
+
+/* ─── SITO MORTO TAG ──────────────────────────────────────── */
+.tag-morto {
+  color: var(--red-600);
+  font-weight: 600;
+}
+
+.stat-morto {
+  background: var(--red-100) !important;
+  border-color: var(--red-600) !important;
+  color: var(--red-600) !important;
 }
 
 /* ─── EMPTY STATE ─────────────────────────────────────────── */

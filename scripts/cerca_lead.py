@@ -57,7 +57,7 @@ def print_csv_output(leads: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Cerca lead nel database B2B.",
+        description="Cerca lead nel database Morpheus.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

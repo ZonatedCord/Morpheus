@@ -17,9 +17,9 @@ const CATEGORIE = [
   "Artigiani", "Negozi", "Intrattenimento"
 ];
 const DEFAULT_PROVINCE = "Provincia di Varese, Lombardia, Italia";
-const ACTIVE_DATASET_STORAGE_KEY = "lead-atlas.activeDataset";
-const POPULATION_JOB_STORAGE_KEY = "lead-atlas.activePopulationJob";
-const FACEBOOK_JOB_STORAGE_KEY = "lead-atlas.activeFacebookJob";
+const ACTIVE_DATASET_STORAGE_KEY = "morpheus.activeDataset";
+const POPULATION_JOB_STORAGE_KEY = "morpheus.activePopulationJob";
+const FACEBOOK_JOB_STORAGE_KEY = "morpheus.activeFacebookJob";
 const PAGE_SIZE = 50000; // carica tutti i lead in una sola pagina — il viewport culling gestisce le performance
 
 const TILE_LAYERS = {
@@ -57,8 +57,8 @@ function normalizeLeads(payload) {
   return payload.map((lead, index) => ({
     ...lead,
     id: String(lead.id || lead.osm_url || `${lead.dataset_id ?? "dataset"}-${index}`),
-    lat: Number(lead.lat),
-    lon: Number(lead.lon),
+    lat: lead.lat != null ? Number(lead.lat) : null,
+    lon: lead.lon != null ? Number(lead.lon) : null,
     distanza_km: Number(lead.distanza_km ?? 0),
     priorita: lead.priorita ?? "",
     categoria: lead.categoria ?? "",
@@ -161,7 +161,7 @@ function DatasetPill({ dataset, active, onClick }) {
 }
 
 const STATO_OPTIONS = ["Contattata", "Rifiutata", "Scartata"];
-const SITE_CHECK_JOB_STORAGE_KEY = "lead-atlas.activeSiteCheckJob";
+const SITE_CHECK_JOB_STORAGE_KEY = "morpheus.activeSiteCheckJob";
 const DEFAULT_WEIGHTS = { dist: 5, sito: 3, cat: 2 };
 
 function computeLocalScore(lead, weights, targetCats, maxDist) {
@@ -349,6 +349,8 @@ export default function App() {
   const [facebookLoading, setFacebookLoading] = useState(false);
   const [facebookStatus, setFacebookStatus] = useState("");
   const [facebookProgress, setFacebookProgress] = useState(0);
+
+  const pendingScrollLeadIdRef = useRef(null);
 
   // Modal aggiunta lead manuale
   const [showAddModal, setShowAddModal] = useState(false);
@@ -724,7 +726,7 @@ export default function App() {
       leadsRef.current.find((item) => item.id === leadId);
     if (!lead) return;
     setSelectedLeadId(leadId);
-    if (!mapRef.current) return;
+    if (!mapRef.current || lead.lat == null || lead.lon == null) return;
     if (pan) {
       mapRef.current.flyTo([lead.lat, lead.lon], Math.max(mapRef.current.getZoom(), 15), {
         duration: 0.45
@@ -786,6 +788,7 @@ export default function App() {
     // Aggiungi solo i marker entrati nel viewport o nel filtro
     visibleLeads.forEach((lead) => {
       if (!prevFilteredIdsRef.current.has(lead.id)) {
+        if (lead.lat == null || lead.lon == null) return; // no marker per lead senza coordinate
         let marker;
         if (lead.in_hotlist) {
           marker = L.marker([lead.lat, lead.lon], { icon: makeStarIcon(false), zIndexOffset: 0 });
@@ -809,6 +812,17 @@ export default function App() {
 
     prevFilteredIdsRef.current = nextIds;
   }, [visibleLeads, isClusterMode]);
+
+  // Scrolla al lead appena salvato dopo il re-render della lista
+  useEffect(() => {
+    if (!pendingScrollLeadIdRef.current) return;
+    const id = pendingScrollLeadIdRef.current;
+    const el = document.querySelector(`[data-lead-id="${CSS.escape(id)}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      pendingScrollLeadIdRef.current = null;
+    }
+  }, [scoredLeads]);
 
   // Aggiorna SOLO i 2 marker che cambiano (prev → deselect, next → select) — O(1)
   const prevSelectedIdRef = useRef(null);
@@ -1038,23 +1052,16 @@ export default function App() {
         }),
       });
       if (res.ok) {
-        const newLead = await res.json();
+        const [newLead] = normalizeLeads([await res.json()]);
         setShowAddModal(false);
         setParseUrlInput("");
         setParseError("");
         setAddModalStep("url");
         setManualForm({ nome: "", categoria: "", comune: "", indirizzo: "", lat: "", lon: "", telefono: "", email: "", sito: "", facebook_url: "" });
-        const leadsRes = await fetch(`/api/leads?dataset_id=${encodeURIComponent(activeDatasetId)}&page_size=${PAGE_SIZE}`);
-        const leadsData = await leadsRes.json();
-        const normalized = normalizeLeads(Array.isArray(leadsData) ? leadsData : leadsData.leads || []);
-        setLeads(normalized);
-        // Seleziona e scrolla al nuovo lead
         if (newLead?.id) {
+          pendingScrollLeadIdRef.current = newLead.id;
           setSelectedLeadId(newLead.id);
-          setTimeout(() => {
-            const el = document.querySelector(`[data-lead-id="${CSS.escape(newLead.id)}"]`);
-            if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-          }, 150);
+          setLeads((prev) => [newLead, ...prev]);
         }
       }
     } finally {
@@ -1184,7 +1191,7 @@ export default function App() {
         {!isSidebarCollapsed ? (
           <div className="sidebar-scroll">
             <div className="brand-block">
-              <div className="eyebrow">Lead Atlas</div>
+              <div className="eyebrow">Morpheus</div>
               <h1>Atlante dei clienti locali</h1>
               <p>Scansiona nuove aree, unisci dataset e apri i lead direttamente sulla mappa senza perdere il contesto.</p>
             </div>
@@ -1614,18 +1621,24 @@ export default function App() {
                         {scoredLeads.slice(0, 300).every((l) => selectedBulkIds.has(l.id)) ? "Deseleziona tutti" : "Seleziona tutti"}
                       </button>
                     </div>
-                    {scoredLeads.slice(0, 300).map((lead, index) => (
-                      <LeadCard
-                        key={lead.id}
-                        lead={lead}
-                        index={index}
-                        active={lead.id === selectedLeadId}
-                        selected={selectedBulkIds.has(lead.id)}
-                        onClick={() => focusLead(lead.id)}
-                        onUpdateStato={handleUpdateStato}
-                        onToggleSelect={handleToggleBulkSelect}
-                      />
-                    ))}
+                    {(() => {
+                      const top = scoredLeads.slice(0, 300);
+                      const inTop = top.some((l) => l.id === selectedLeadId);
+                      const pinned = !inTop && selectedLeadId ? scoredLeads.find((l) => l.id === selectedLeadId) : null;
+                      const displayed = pinned ? [pinned, ...top] : top;
+                      return displayed.map((lead, index) => (
+                        <LeadCard
+                          key={lead.id}
+                          lead={lead}
+                          index={index}
+                          active={lead.id === selectedLeadId}
+                          selected={selectedBulkIds.has(lead.id)}
+                          onClick={() => focusLead(lead.id)}
+                          onUpdateStato={handleUpdateStato}
+                          onToggleSelect={handleToggleBulkSelect}
+                        />
+                      ));
+                    })()}
                     {scoredLeads.length > 300 && (
                       <div className="empty-state" style={{ fontSize: "0.8rem" }}>
                         +{scoredLeads.length - 300} lead non visualizzati. Usa i filtri per restringere.

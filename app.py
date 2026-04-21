@@ -42,7 +42,7 @@ from morpheus.facebook_enrichment import enrich_leads_facebook
 from morpheus.site_checker import check_sites_batch
 from morpheus.url_parser import geocode_address, parse_lead_url
 from morpheus.paths import DB_PATH, DEFAULT_HOTLIST, DEFAULT_OSM_OUTPUT
-from morpheus.varesotto_osm import DEFAULT_PROVINCE_QUERY
+from morpheus.osm_finder import DEFAULT_PROVINCE_QUERY
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).parent
@@ -1264,9 +1264,9 @@ def api_leads():
             "email": row["email"] or "",
             "rilevanza_score": row.get("rilevanza_score"),
             "facebook_url": row.get("facebook_url") or "",
+            "indirizzo": row.get("indirizzo") or "",
         }
         for row in leads
-        if row["lat"] is not None and row["lon"] is not None
     ]
     # total = numero di lead con coordinate (quelli che compaiono sulla mappa)
     total_with_coords = count_leads(DB_PATH, dataset_id)

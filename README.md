@@ -1,226 +1,117 @@
-# FinderClientiVaresotto
+# Morpheus
 
-Pipeline Python per trovare lead B2B locali nell'area di Varese, arricchirli e consultarli tramite SQLite, CLI e interfaccia web.
+> *"Morpheus ti mostra la verità."*
 
-## Stato attuale
+Migliaia di attività locali esistono, lavorano, hanno clienti — ma online non esistono. Nessun sito, nessuna scheda Google, solo un profilo Facebook abbandonato. Sono **addormentate**.
 
-Dal 2026-04-08 il progetto ha due livelli distinti:
+**Morpheus le sveglia.**
 
-- backend Flask + SQLite in root e `src/`
-- frontend React/Vite in `frontend/`
+Doppio riferimento voluto: Morfeo greco, dio del sogno — le attività senza presenza digitale dormono. Morpheus di Matrix — il tool tira fuori dal sonno le aziende invisibili online e le porta davanti a chi può aiutarle.
 
-Il backend resta la source of truth operativa.  
-Il frontend React consuma solo le API Flask e non sostituisce la pipeline CSV esistente.
+Raccoglie dati da **OpenStreetMap** e **Foursquare**, classifica le attività con uno scoring composito (distanza · assenza sito · categoria) e le mostra su una **mappa web interattiva** pronta per l'outreach.
 
-## Architettura operativa
+---
 
-```text
-DataBase B2B/
-├── app.py                                  # backend Flask + API
-├── frontend/                               # UI React/Vite
-├── scripts/
-│   ├── varesotto_osm.py                    # genera CSV OSM
-│   ├── importa_db.py                       # importa CSV nel DB SQLite
-│   ├── cerca_lead.py                       # query CLI sul DB
-│   └── run_map.sh                          # avvia Flask
-├── src/finder_clienti_varesotto/
-│   ├── paths.py                            # path centralizzati
-│   ├── varesotto_osm.py                    # estrazione OSM / Overpass
-│   ├── db.py                               # SQLite multi-dataset
-│   └── ...
-└── data/
-    ├── leads.db                            # database locale condiviso
-    └── output/
-        └── osm/
-            ├── clienti_varesotto.csv       # dataset OSM di default
-            └── runs/                       # CSV dei popolamenti aggiuntivi
-```
+## Funzionalità
 
-## Concetti chiave
+- **Scansione OSM + Foursquare** — 9 categorie, 12 query Overpass, deduplicazione automatica
+- **Scoring composito** — distanza + assenza sito + categoria target (configurabile via slider)
+- **Mappa Leaflet** — cluster per città a zoom basso, viewport culling per grandi dataset
+- **Arricchimento Facebook** — ricerca automatica profili pubblici (Brave + DuckDuckGo)
+- **Verifica siti morti** — check parallelo, badge "Sito morto" per siti non raggiungibili
+- **Aggiunta manuale** — modal con parsing URL Facebook/Google Maps e geocodifica Nominatim
+- **Bulk actions** — selezione multipla, aggiornamento stato, export CSV
 
-- Un `dataset` rappresenta un popolamento OSM relativo a un punto di riferimento.
-- Il dataset di default resta `Vedano Olona`.
-- Nuovi popolamenti non cancellano gli altri dataset: vengono salvati in SQLite e anche in `data/output/osm/runs/`.
-- La hotlist viene fusa in import per marcare i lead arricchiti.
-- La parte LLM resta opzionale e viene per ultima.
+---
 
 ## Setup
 
-```bash
-bash scripts/setup.sh
-.venv/bin/python3 --version
-```
-
-## Flusso base consigliato
-
-1. Rigenera il CSV OSM di default, se serve:
+**Requisiti:** Python 3.11+, Node.js 18+
 
 ```bash
-.venv/bin/python3 scripts/varesotto_osm.py
+# Clona il repo
+git clone https://github.com/tuo-username/morpheus.git
+cd morpheus
+
+# Ambiente Python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Frontend
+cd frontend && npm install && npm run build && cd ..
+
+# Variabili d'ambiente (opzionali)
+cp .env.example .env
+
+# Avvio
+.venv/bin/python3 app.py
+# → http://localhost:5000
 ```
 
-2. Importa il dataset nel database:
+---
 
-```bash
-.venv/bin/python3 scripts/importa_db.py
+## Variabili d'ambiente
+
+| Variabile | Default | Descrizione |
+|-----------|---------|-------------|
+| `FSQ_API_KEY` | — | Foursquare Places API v3 (opzionale) |
+| `SCORING_CATEGORIES` | — | Categorie target (es. `Ristorazione,Artigiani`) |
+| `SCORING_MAX_DISTANCE_KM` | `50` | Distanza massima per normalizzazione score |
+
+---
+
+## Struttura
+
+```
+morpheus/
+├── app.py                    # Flask server + API REST + job asincroni
+├── requirements.txt
+├── .env.example
+├── data/
+│   └── leads.db              # SQLite (gitignore)
+├── frontend/
+│   ├── src/App.jsx           # React app principale
+│   └── dist/                 # Build produzione (gitignore)
+├── scripts/
+│   ├── importa_db.py         # Importa CSV nel DB
+│   ├── cerca_lead.py         # Query CLI sul DB
+│   ├── scorizza_lead.py      # Scoring LLM via Ollama (opzionale)
+│   └── run_map.sh
+└── src/morpheus/
+    ├── osm_finder.py         # MorpheusFinder — raccolta OSM + Foursquare
+    ├── db.py                 # Operazioni SQLite
+    ├── facebook_enrichment.py
+    ├── site_checker.py
+    ├── url_parser.py
+    ├── llm_filter.py
+    └── paths.py
 ```
 
-3. Avvia l'interfaccia web:
-
-```bash
-bash scripts/run_map.sh
-```
-
-4. Apri:
-
-```text
-http://127.0.0.1:5000
-```
-
-Se `frontend/dist` esiste, Flask serve la build React.  
-Se la build non esiste ancora, Flask mostra il fallback HTML inline legacy.
-
-## Frontend React
-
-Il frontend moderno vive in `frontend/` e usa Vite con proxy verso Flask.
-
-La UI React attuale include:
-
-- pannello sinistro richiudibile per dataset, popolamento e filtri
-- pannello destro richiudibile per la lista lead
-- mappa centrale che si allarga quando chiudi uno o entrambi i pannelli
-- progress bar del popolamento con polling su job backend
-- modalita' `append` per aggiungere una nuova area al dataset attivo senza cancellare i lead esistenti
-- ripresa del monitoraggio del popolamento dopo refresh della pagina
-
-Installazione dipendenze:
-
-```bash
-cd frontend
-npm install
-```
-
-Sviluppo:
-
-```bash
-npm run dev
-```
-
-Build produzione locale:
-
-```bash
-npm run build
-```
-
-Dopo `npm run build`, `bash scripts/run_map.sh` serve la UI React direttamente da Flask.
-
-## Database e dataset multipli
-
-In `src/finder_clienti_varesotto/db.py` il database SQLite ora gestisce:
-
-- tabella `attivita`
-- tabella `dataset_runs`
-
-Ogni dataset ha:
-
-- `dataset_id`
-- `label`
-- `reference_query`
-- `reference_name`
-- `reference_lat`
-- `reference_lon`
-- `province_query`
-- contatori aggregati
-
-Questo permette di mantenere più popolamenti separati senza perdere quello già esistente.
-
-## Popolare da un altro punto di partenza
-
-Da terminale puoi creare o aggiornare un dataset specifico:
-
-```bash
-.venv/bin/python3 scripts/importa_db.py \
-  --reference "Busto Arsizio, Varese, Lombardia, Italia"
-```
-
-Oppure forzare metadati/dataset:
-
-```bash
-.venv/bin/python3 scripts/importa_db.py \
-  --reference "Saronno, Varese, Lombardia, Italia" \
-  --dataset-id "saronno-varese-lombardia-italia" \
-  --label "Saronno"
-```
-
-Dalla UI React puoi fare lo stesso nella sezione `Nuovo popolamento`.
-
-Se attivi `Unisci i nuovi risultati all'archivio attivo`:
-
-- il dataset esistente non viene cancellato
-- i nuovi lead vengono aggiunti
-- i duplicati vengono aggiornati
-- la UI mostra il progresso della scansione e riprende a monitorarla dopo un refresh
-
-## CLI
-
-Elenca i dataset:
-
-```bash
-.venv/bin/python3 scripts/cerca_lead.py --list-datasets
-```
-
-Query su un dataset specifico:
-
-```bash
-.venv/bin/python3 scripts/cerca_lead.py \
-  --dataset vedano-olona-varese-lombardia-italia \
-  --categoria ristorazione \
-  --senza-sito \
-  --limit 10
-```
-
-Solo hotlist:
-
-```bash
-.venv/bin/python3 scripts/cerca_lead.py --hotlist --priorita ALTISSIMA
-```
+---
 
 ## API Flask
 
-Endpoint principali:
+| Endpoint | Metodo | Descrizione |
+|----------|--------|-------------|
+| `/api/datasets` | GET | Lista dataset |
+| `/api/datasets` | POST | Avvia scansione OSM (background job) |
+| `/api/leads` | GET | Lead con filtri opzionali |
+| `/api/leads` | POST | Crea lead manuale |
+| `/api/leads/export` | GET | Export CSV filtrato |
+| `/api/jobs/{id}` | GET | Stato job asincrono |
+| `/api/datasets/{id}/enrich/facebook` | POST | Arricchimento Facebook |
+| `/api/datasets/{id}/check-sites` | POST | Verifica siti morti |
 
-- `GET /api/datasets`
-- `POST /api/datasets`
-- `GET /api/leads`
-- `GET /api/stats`
+---
 
-Filtri utili per `GET /api/leads`:
+## Stack
 
-- `dataset_id`
-- `priorita`
-- `categoria`
-- `solo_senza_sito`
-- `solo_hotlist`
-- `comune`
-- `limit`
-
-## File dati principali
-
-- `data/output/osm/clienti_varesotto.csv`: dataset OSM di default
-- `data/output/osm/runs/*.csv`: dataset generati da altri punti di riferimento
-- `data/output/research/clienti_varesotto_outreach_hotlist.csv`: hotlist arricchita
-- `data/leads.db`: archivio SQLite condiviso da web, CLI e scoring
-
-## LLM
-
-La parte LLM locale resta deliberatamente l'ultimo step.
-
-- Non e' necessaria per usare mappa, lista, filtri, dataset multipli o CLI.
-- I file `src/finder_clienti_varesotto/llm_filter.py` e `scripts/scorizza_lead.py` vanno considerati work in progress separato.
-
-## Note operative
-
-- Usa `.venv/bin/python3` invece di affidarti all'attivazione shell.
-- Non distribuire path hardcoded: usa sempre `paths.py`.
-- La pipeline CSV originale non va riscritta: il database e il frontend la estendono.
-- Se aggiorni l'architettura, aggiorna anche i file in `docs/`.
+| Strato | Tecnologia |
+|--------|-----------|
+| Backend | Python 3.13 + Flask |
+| Database | SQLite |
+| Geodati | OpenStreetMap (Overpass API) + Nominatim |
+| Dati extra | Foursquare Places API v3 |
+| Frontend | React 18 + Vite + Leaflet |
+| Scoring LLM | Ollama locale (`qwen2.5:3b`, opzionale) |

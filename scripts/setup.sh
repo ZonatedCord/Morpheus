@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 
-echo "SETUP FINDER CLIENTI VARESOTTO"
-echo "=============================="
+echo "MORPHEUS — Setup"
+echo "================"
 echo ""
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -36,6 +36,5 @@ echo "Setup completato."
 echo ""
 echo "Comandi utili:"
 echo "  source \"${VENV_DIR}/bin/activate\""
-echo "  python3 \"${PROJECT_ROOT}/scripts/varesotto_client_finder.py\""
-echo "  python3 \"${PROJECT_ROOT}/scripts/varesotto_linkedin.py\""
+echo "  .venv/bin/python3 app.py"
 echo ""

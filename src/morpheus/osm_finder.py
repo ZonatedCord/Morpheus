@@ -678,6 +678,21 @@ out body center qt;
         if not tags:
             return None
 
+        # Salta attività esplicitamente chiuse/dismesse (solo tag certi, non generici)
+        if (
+            tags.get("disused") == "yes"
+            or tags.get("closed") == "yes"
+            or tags.get("shop") == "vacant"
+            or tags.get("amenity") == "vacant"
+            or tags.get("opening_hours") == "off"
+            or tags.get("disused:amenity")
+            or tags.get("disused:shop")
+            or tags.get("disused:office")
+            or tags.get("disused:tourism")
+            or tags.get("disused:leisure")
+        ):
+            return None
+
         lat = element.get("lat")
         lon = element.get("lon")
         if lat is None or lon is None:

@@ -206,7 +206,7 @@ const LeadCard = memo(function LeadCard({ lead, active, index, onClick, onUpdate
   }
 
   return (
-    <div className={`lead-card-outer${selected ? " bulk-selected" : ""}`}>
+    <div className={`lead-card-outer${selected ? " bulk-selected" : ""}`} data-lead-id={lead.id}>
       <input
         type="checkbox"
         className="bulk-checkbox"
@@ -1038,6 +1038,7 @@ export default function App() {
         }),
       });
       if (res.ok) {
+        const newLead = await res.json();
         setShowAddModal(false);
         setParseUrlInput("");
         setParseError("");
@@ -1045,7 +1046,16 @@ export default function App() {
         setManualForm({ nome: "", categoria: "", comune: "", indirizzo: "", lat: "", lon: "", telefono: "", email: "", sito: "", facebook_url: "" });
         const leadsRes = await fetch(`/api/leads?dataset_id=${encodeURIComponent(activeDatasetId)}&page_size=${PAGE_SIZE}`);
         const leadsData = await leadsRes.json();
-        setLeads(normalizeLeads(Array.isArray(leadsData) ? leadsData : leadsData.leads || []));
+        const normalized = normalizeLeads(Array.isArray(leadsData) ? leadsData : leadsData.leads || []);
+        setLeads(normalized);
+        // Seleziona e scrolla al nuovo lead
+        if (newLead?.id) {
+          setSelectedLeadId(newLead.id);
+          setTimeout(() => {
+            const el = document.querySelector(`[data-lead-id="${CSS.escape(newLead.id)}"]`);
+            if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+          }, 150);
+        }
       }
     } finally {
       setSaveLeadLoading(false);

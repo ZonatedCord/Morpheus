@@ -18,17 +18,29 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from morpheus.db import (
     count_leads,
     create_dataset_from_reference,
+    create_manual_lead,
+    delete_dataset,
+    export_leads_csv,
     get_active_dataset,
+    get_job,
     import_from_csv,
     init_db,
+    list_comuni,
     list_datasets,
+    mark_stale_jobs,
     query_leads,
+    save_job,
+    update_lead_fields,
+    update_leads_bulk,
 )
+from morpheus.facebook_enrichment import enrich_leads_facebook
+from morpheus.site_checker import check_sites_batch
+from morpheus.url_parser import parse_lead_url
 from morpheus.paths import DB_PATH, DEFAULT_HOTLIST, DEFAULT_OSM_OUTPUT
 from morpheus.varesotto_osm import DEFAULT_PROVINCE_QUERY
 
@@ -36,8 +48,8 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).parent
 FRONTEND_DIST_DIR = BASE_DIR / "frontend" / "dist"
 FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
-POPULATION_JOBS: dict[str, dict] = {}
-POPULATION_JOBS_LOCK = Lock()
+# Lock leggero usato solo per serializzare le lettura-scrittura in-process
+_JOB_LOCK = Lock()
 
 
 def _list_arg(name: str) -> list[str]:
@@ -62,17 +74,33 @@ def _int_arg(name: str) -> int | None:
     return value if value > 0 else None
 
 
-def _save_job(job_id: str, payload: dict) -> None:
-    with POPULATION_JOBS_LOCK:
-        current = POPULATION_JOBS.get(job_id, {}).copy()
-        current.update(payload)
-        POPULATION_JOBS[job_id] = current
+def _save_job(job_id: str, payload: dict, job_type: str = "populate") -> None:
+    with _JOB_LOCK:
+        save_job(job_id, payload, job_type=job_type, db_path=DB_PATH)
 
 
 def _get_job(job_id: str) -> dict | None:
-    with POPULATION_JOBS_LOCK:
-        payload = POPULATION_JOBS.get(job_id)
-        return payload.copy() if payload else None
+    row = get_job(job_id, db_path=DB_PATH)
+    if row is None:
+        return None
+    result = {
+        "job_id": row["job_id"],
+        "job_type": row.get("job_type", "populate"),
+        "status": row["status"],
+        "progress": row.get("progress", 0),
+        "stage": row.get("stage", ""),
+        "message": row.get("message", ""),
+        "error": row.get("error", ""),
+        "dataset_id": row.get("dataset_id", ""),
+    }
+    extra = row.get("_result") or {}
+    if extra:
+        job_type = row.get("job_type", "populate")
+        if job_type == "populate":
+            result["dataset"] = extra
+        else:
+            result["result"] = extra
+    return result
 
 
 def _population_worker(
@@ -92,7 +120,7 @@ def _population_worker(
                 "progress": event.get("progress", 0),
                 "stage": event.get("stage", ""),
                 "message": event.get("message", "Popolamento in corso."),
-                "meta": event,
+                "dataset_id": dataset_id or "",
             },
         )
 
@@ -115,6 +143,7 @@ def _population_worker(
                 "stage": "error",
                 "message": str(exc),
                 "error": str(exc),
+                "dataset_id": dataset_id or "",
             },
         )
         return
@@ -126,8 +155,65 @@ def _population_worker(
             "progress": 100,
             "stage": "done",
             "message": f"Dataset pronto: {dataset['label']}",
-            "dataset": dataset,
+            "dataset_id": dataset.get("dataset_id", ""),
+            "result_json": dataset,
         },
+    )
+
+
+def _facebook_enrichment_worker(
+    job_id: str,
+    *,
+    dataset_id: str,
+) -> None:
+    def on_progress(event: dict) -> None:
+        _save_job(
+            job_id,
+            {
+                "status": "running",
+                "progress": event.get("progress", 0),
+                "stage": event.get("stage", ""),
+                "message": event.get("message", "Ricerca Facebook in corso..."),
+                "dataset_id": dataset_id,
+            },
+            job_type="facebook_enrichment",
+        )
+
+    try:
+        result = enrich_leads_facebook(
+            dataset_id=dataset_id,
+            db_path=DB_PATH,
+            progress_callback=on_progress,
+        )
+    except Exception as exc:
+        _save_job(
+            job_id,
+            {
+                "status": "error",
+                "progress": 100,
+                "stage": "error",
+                "message": str(exc),
+                "error": str(exc),
+                "dataset_id": dataset_id,
+            },
+            job_type="facebook_enrichment",
+        )
+        return
+
+    _save_job(
+        job_id,
+        {
+            "status": "completed",
+            "progress": 100,
+            "stage": "done",
+            "message": (
+                f"Facebook completato: {result['enriched']} profili trovati "
+                f"su {result['total']} lead."
+            ),
+            "dataset_id": dataset_id,
+            "result_json": result,
+        },
+        job_type="facebook_enrichment",
     )
 
 
@@ -482,7 +568,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <div id="sidebar">
     <div id="sidebar-header">
-      <h1>DataBase <span>B2B</span></h1>
+      <h1>Morpheus</h1>
       <div id="counter">Caricamento...</div>
       <div id="hotlist-counter"></div>
     </div>
@@ -1141,18 +1227,24 @@ def api_job_status(job_id: str):
 @app.route("/api/leads")
 def api_leads():
     dataset_id = (request.args.get("dataset_id") or "").strip() or None
+    page_size = min(_int_arg("page_size") or 50000, 100000)
+    page = max((_int_arg("page") or 1), 1)
+    offset = (page - 1) * page_size
+
     leads = query_leads(
         priorita=_list_arg("priorita") or None,
         categoria=_list_arg("categoria") or None,
         solo_senza_sito=_bool_arg("solo_senza_sito"),
         solo_hotlist=_bool_arg("solo_hotlist") or _bool_arg("in_hotlist"),
         comune=(request.args.get("comune") or "").strip() or None,
-        limit=_int_arg("limit"),
+        limit=page_size,
+        offset=offset,
         dataset_id=dataset_id,
         db_path=DB_PATH,
     )
     result = [
         {
+            "id": row.get("osm_url") or "",
             "dataset_id": row.get("dataset_id") or "",
             "lat": row["lat"],
             "lon": row["lon"],
@@ -1171,11 +1263,43 @@ def api_leads():
             "rating": row["rating"] or "",
             "email": row["email"] or "",
             "rilevanza_score": row.get("rilevanza_score"),
+            "facebook_url": row.get("facebook_url") or "",
         }
         for row in leads
         if row["lat"] is not None and row["lon"] is not None
     ]
-    return jsonify(result)
+    # total = numero di lead con coordinate (quelli che compaiono sulla mappa)
+    total_with_coords = count_leads(DB_PATH, dataset_id)
+    return jsonify({
+        "leads": result,
+        "total": total_with_coords,
+        "page": page,
+        "page_size": page_size,
+        "has_more": len(result) == page_size,
+    })
+
+
+@app.route("/api/datasets/<dataset_id>/enrich/facebook", methods=["POST"])
+def api_enrich_facebook(dataset_id: str):
+    job_id = str(uuid4())
+    _save_job(
+        job_id,
+        {
+            "status": "queued",
+            "progress": 1,
+            "stage": "queued",
+            "message": "Avvio ricerca Facebook...",
+            "dataset_id": dataset_id,
+        },
+        job_type="facebook_enrichment",
+    )
+    Thread(
+        target=_facebook_enrichment_worker,
+        kwargs={"job_id": job_id, "dataset_id": dataset_id},
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id, "status": "queued", "progress": 1,
+                    "message": "Ricerca Facebook avviata."}), 202
 
 
 @app.route("/api/stats")
@@ -1203,8 +1327,196 @@ def api_stats():
     )
 
 
+@app.route("/api/leads/parse-url", methods=["POST"])
+def api_parse_lead_url():
+    """Parse a Facebook or Google Maps URL and return pre-filled lead fields."""
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "url è obbligatorio"}), 400
+    try:
+        data = parse_lead_url(url)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        return jsonify({"error": f"Parsing fallito: {exc}"}), 422
+    return jsonify(data)
+
+
+@app.route("/api/leads", methods=["POST"])
+def api_create_lead():
+    """Create a manually-entered lead in the active dataset."""
+    payload = request.get_json(silent=True) or {}
+    dataset_id = (payload.get("dataset_id") or "").strip() or None
+    if not dataset_id:
+        return jsonify({"error": "dataset_id è obbligatorio"}), 400
+
+    lead = create_manual_lead(dataset_id, payload, db_path=DB_PATH)
+    if lead is None:
+        return jsonify({"error": "nome obbligatorio o dataset non trovato"}), 400
+
+    return jsonify({
+        "id": lead.get("osm_url", ""),
+        "dataset_id": lead.get("dataset_id", ""),
+        "nome": lead.get("nome", ""),
+        "lat": lead.get("lat"),
+        "lon": lead.get("lon"),
+        "priorita": lead.get("priorita", ""),
+        "categoria": lead.get("categoria", ""),
+        "comune": lead.get("comune", ""),
+        "telefono": lead.get("telefono", ""),
+        "sito": lead.get("sito", ""),
+        "ha_sito": lead.get("ha_sito", ""),
+        "distanza_km": round(lead.get("distanza_km") or 0, 2),
+        "in_hotlist": bool(lead.get("in_hotlist")),
+        "stato": lead.get("stato", ""),
+        "proposta": lead.get("proposta", ""),
+        "criticita": lead.get("criticita", ""),
+        "rating": lead.get("rating", ""),
+        "email": lead.get("email", ""),
+        "rilevanza_score": lead.get("rilevanza_score"),
+        "facebook_url": lead.get("facebook_url", ""),
+        "indirizzo": lead.get("indirizzo", ""),
+    }), 201
+
+
+@app.route("/api/leads/export")
+def api_export_leads():
+    """Stream filtered leads as a downloadable CSV file."""
+    dataset_id = (request.args.get("dataset_id") or "").strip() or None
+    csv_gen = export_leads_csv(
+        dataset_id=dataset_id,
+        priorita=_list_arg("priorita") or None,
+        categoria=_list_arg("categoria") or None,
+        solo_senza_sito=_bool_arg("solo_senza_sito"),
+        solo_hotlist=_bool_arg("solo_hotlist") or _bool_arg("in_hotlist"),
+        comune=(request.args.get("comune") or "").strip() or None,
+        db_path=DB_PATH,
+    )
+    filename = f"morpheus_leads_{dataset_id or 'all'}.csv"
+    return Response(
+        csv_gen,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route("/api/leads", methods=["PATCH"])
+def api_update_leads_bulk():
+    """Bulk partial update: {'ids': [...], 'updates': {...}}"""
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids") or []
+    updates = payload.get("updates") or {}
+    if not ids or not updates:
+        return jsonify({"error": "ids e updates sono obbligatori"}), 400
+    count = update_leads_bulk(ids, updates, db_path=DB_PATH)
+    return jsonify({"updated": count})
+
+
+@app.route("/api/leads/<path:lead_id>", methods=["PATCH"])
+def api_update_lead(lead_id: str):
+    """Partial update of editable fields on a single lead."""
+    payload = request.get_json(silent=True) or {}
+    updated = update_lead_fields(lead_id, payload, db_path=DB_PATH)
+    if updated is None:
+        return jsonify({"error": "Lead non trovato"}), 404
+    return jsonify({
+        "id": updated.get("osm_url", ""),
+        "dataset_id": updated.get("dataset_id", ""),
+        "nome": updated.get("nome", ""),
+        "stato": updated.get("stato", ""),
+        "proposta": updated.get("proposta", ""),
+        "rating": updated.get("rating", ""),
+        "criticita": updated.get("criticita", ""),
+        "in_hotlist": bool(updated.get("in_hotlist")),
+        "telefono": updated.get("telefono", ""),
+        "email": updated.get("email", ""),
+        "sito": updated.get("sito", ""),
+        "ha_sito": updated.get("ha_sito", ""),
+    })
+
+
+def _site_check_worker(job_id: str, *, dataset_id: str) -> None:
+    def on_progress(event: dict) -> None:
+        _save_job(
+            job_id,
+            {
+                "status": "running",
+                "progress": event.get("progress", 0),
+                "stage": event.get("stage", ""),
+                "message": event.get("message", "Verifica siti in corso..."),
+                "dataset_id": dataset_id,
+            },
+            job_type="site_check",
+        )
+
+    try:
+        result = check_sites_batch(dataset_id=dataset_id, db_path=DB_PATH, progress_callback=on_progress)
+    except Exception as exc:
+        _save_job(
+            job_id,
+            {"status": "error", "progress": 100, "stage": "error",
+             "message": str(exc), "error": str(exc), "dataset_id": dataset_id},
+            job_type="site_check",
+        )
+        return
+
+    _save_job(
+        job_id,
+        {
+            "status": "completed",
+            "progress": 100,
+            "stage": "done",
+            "message": (
+                f"Verifica completata: {result['dead']} siti non raggiungibili "
+                f"su {result['checked']} controllati."
+            ),
+            "dataset_id": dataset_id,
+            "result_json": result,
+        },
+        job_type="site_check",
+    )
+
+
+@app.route("/api/datasets/<dataset_id>/check-sites", methods=["POST"])
+def api_check_sites(dataset_id: str):
+    job_id = str(uuid4())
+    _save_job(
+        job_id,
+        {"status": "queued", "progress": 1, "stage": "queued",
+         "message": "Avvio verifica siti...", "dataset_id": dataset_id},
+        job_type="site_check",
+    )
+    Thread(
+        target=_site_check_worker,
+        kwargs={"job_id": job_id, "dataset_id": dataset_id},
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id, "status": "queued", "progress": 1,
+                    "message": "Verifica siti avviata."}), 202
+
+
+@app.route("/api/datasets/<dataset_id>", methods=["DELETE"])
+def api_delete_dataset(dataset_id: str):
+    """Delete a dataset and all its leads."""
+    result = delete_dataset(dataset_id, db_path=DB_PATH)
+    if result["deleted_leads"] == 0:
+        existing = get_active_dataset(DB_PATH, dataset_id)
+        if existing is None:
+            return jsonify({"error": "Dataset non trovato"}), 404
+    return jsonify(result)
+
+
+@app.route("/api/comuni")
+def api_comuni():
+    """Return distinct comune values for autocomplete."""
+    dataset_id = (request.args.get("dataset_id") or "").strip() or None
+    return jsonify(list_comuni(dataset_id, DB_PATH))
+
+
 if __name__ == "__main__":
     init_db(DB_PATH)
+    mark_stale_jobs(DB_PATH)
     if count_leads(DB_PATH) == 0 and DEFAULT_OSM_OUTPUT.exists():
         print("Database vuoto — importo il dataset di default dal CSV...")
         import_from_csv(DEFAULT_OSM_OUTPUT, DEFAULT_HOTLIST, DB_PATH)

@@ -189,7 +189,7 @@ function buildExportUrl(params) {
   return `/api/leads/export?${p.toString()}`;
 }
 
-const LeadCard = memo(function LeadCard({ lead, active, index, onClick, onUpdateStato, selected, onToggleSelect }) {
+const LeadCard = memo(function LeadCard({ lead, active, index, onClick, onUpdateStato, onEdit, selected, onToggleSelect }) {
   const displayPriority = lead._localPriority ?? lead.priorita;
   const priorityColor = PRIORITY_COLORS[displayPriority] || "#adb5bd";
   const siteLabel = lead.ha_sito === "MORTO" ? "Sito morto" : lead.ha_sito === "NO" ? "Senza sito" : "Con sito";
@@ -205,6 +205,11 @@ const LeadCard = memo(function LeadCard({ lead, active, index, onClick, onUpdate
     onToggleSelect(lead.id);
   }
 
+  function handleEdit(e) {
+    e.stopPropagation();
+    onEdit(lead);
+  }
+
   return (
     <div className={`lead-card-outer${selected ? " bulk-selected" : ""}`} data-lead-id={lead.id}>
       <input
@@ -215,6 +220,13 @@ const LeadCard = memo(function LeadCard({ lead, active, index, onClick, onUpdate
         onClick={(e) => e.stopPropagation()}
         aria-label={`Seleziona ${lead.nome}`}
       />
+      <button
+        type="button"
+        className="lead-card-edit-btn"
+        onClick={handleEdit}
+        title="Modifica"
+        aria-label={`Modifica ${lead.nome}`}
+      >✎</button>
       <button type="button" className={`lead-card${active ? " active" : ""}${isScartata ? " scartata" : ""}`} onClick={onClick}>
         <div className="lead-card-index">{index + 1}</div>
         <div className="lead-card-body">
@@ -365,6 +377,17 @@ export default function App() {
   const [saveLeadLoading, setSaveLeadLoading] = useState(false);
   const [geocodeLoading, setGeocodeLoading] = useState(false);
   const [geocodeError, setGeocodeError] = useState("");
+
+  // Modal modifica lead
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editLeadId, setEditLeadId] = useState(null);
+  const [editForm, setEditForm] = useState({
+    nome: "", categoria: "", comune: "", indirizzo: "",
+    lat: "", lon: "", telefono: "", email: "", sito: "", facebook_url: "", proposta: ""
+  });
+  const [editLoading, setEditLoading] = useState(false);
+  const [editGeocodeLoading, setEditGeocodeLoading] = useState(false);
+  const [editGeocodeError, setEditGeocodeError] = useState("");
 
   const activeDataset = useMemo(
     () => datasets.find((dataset) => dataset.datasetId === activeDatasetId) || datasets[0] || null,
@@ -1090,6 +1113,70 @@ export default function App() {
     }
   }
 
+  function handleOpenEdit(lead) {
+    setEditLeadId(lead.id);
+    setEditForm({
+      nome: lead.nome || "",
+      categoria: lead.categoria || "",
+      comune: lead.comune || "",
+      indirizzo: lead.indirizzo || "",
+      lat: lead.lat != null ? String(lead.lat) : "",
+      lon: lead.lon != null ? String(lead.lon) : "",
+      telefono: lead.telefono && lead.telefono !== "N/D" ? lead.telefono : "",
+      email: lead.email && lead.email !== "N/D" ? lead.email : "",
+      sito: lead.sito && lead.sito !== "N/D" ? lead.sito : "",
+      facebook_url: lead.facebook_url && lead.facebook_url !== "N/D" && lead.facebook_url !== "N/F" ? lead.facebook_url : "",
+      proposta: lead.proposta || "",
+    });
+    setEditGeocodeError("");
+    setShowEditModal(true);
+  }
+
+  async function handleGeocodeEdit() {
+    const q = [editForm.indirizzo, editForm.comune].filter(Boolean).join(", ").trim();
+    if (!q) return;
+    setEditGeocodeLoading(true);
+    setEditGeocodeError("");
+    try {
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setEditGeocodeError(data.error || "Indirizzo non trovato");
+      } else {
+        setEditForm((f) => ({ ...f, lat: String(data.lat), lon: String(data.lon) }));
+      }
+    } catch {
+      setEditGeocodeError("Errore di rete");
+    } finally {
+      setEditGeocodeLoading(false);
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editLeadId || !editForm.nome.trim()) return;
+    setEditLoading(true);
+    try {
+      const body = {
+        ...editForm,
+        lat: editForm.lat !== "" ? parseFloat(editForm.lat) : null,
+        lon: editForm.lon !== "" ? parseFloat(editForm.lon) : null,
+      };
+      const res = await fetch(`/api/leads/${encodeURIComponent(editLeadId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const [updated] = normalizeLeads([await res.json()]);
+        setLeads((prev) => prev.map((l) => l.id === editLeadId ? updated : l));
+        setShowEditModal(false);
+        setEditLeadId(null);
+      }
+    } finally {
+      setEditLoading(false);
+    }
+  }
+
   async function handleStartFacebookEnrichment() {
     if (!activeDatasetId) return;
     setFacebookLoading(true);
@@ -1635,6 +1722,7 @@ export default function App() {
                           selected={selectedBulkIds.has(lead.id)}
                           onClick={() => focusLead(lead.id)}
                           onUpdateStato={handleUpdateStato}
+                          onEdit={handleOpenEdit}
                           onToggleSelect={handleToggleBulkSelect}
                         />
                       ));
@@ -1661,14 +1749,98 @@ export default function App() {
         </section>
       </main>
 
+      {showEditModal && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowEditModal(false); }}
+        >
+          <div style={{ background: "#fff", borderRadius: "var(--radius-md)", padding: "24px 28px", width: "620px", maxWidth: "96vw", maxHeight: "92vh", overflowY: "auto", boxShadow: "var(--shadow-md)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
+              <span style={{ fontWeight: 700, fontSize: "15px" }}>Modifica attività</span>
+              <button onClick={() => setShowEditModal(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "20px", color: "var(--text-3)", lineHeight: 1 }}>✕</button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 16px", marginBottom: "10px" }}>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Nome *</div>
+                <input type="text" className="field" value={editForm.nome} onChange={(e) => setEditForm((f) => ({ ...f, nome: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Comune</div>
+                <input type="text" className="field" value={editForm.comune} onChange={(e) => setEditForm((f) => ({ ...f, comune: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Telefono</div>
+                <input type="text" className="field" value={editForm.telefono} onChange={(e) => setEditForm((f) => ({ ...f, telefono: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Email</div>
+                <input type="text" className="field" value={editForm.email} onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Sito web</div>
+                <input type="text" className="field" value={editForm.sito} onChange={(e) => setEditForm((f) => ({ ...f, sito: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Facebook</div>
+                <input type="text" className="field" value={editForm.facebook_url} onChange={(e) => setEditForm((f) => ({ ...f, facebook_url: e.target.value }))} style={{ marginBottom: 0 }} />
+              </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Indirizzo</div>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <input type="text" className="field" placeholder="Via Roma 1, Varese" value={editForm.indirizzo} onChange={(e) => setEditForm((f) => ({ ...f, indirizzo: e.target.value }))} style={{ marginBottom: 0, flex: 1 }} />
+                  <button type="button" onClick={handleGeocodeEdit} disabled={editGeocodeLoading || (!editForm.indirizzo && !editForm.comune)} style={{ padding: "0 12px", fontSize: "11px", fontWeight: 600, background: "var(--accent-light)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {editGeocodeLoading ? "..." : "📍 Geocodifica"}
+                  </button>
+                </div>
+                {editGeocodeError && <div style={{ fontSize: "11px", color: "var(--danger)", marginTop: "3px" }}>{editGeocodeError}</div>}
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Latitudine</div>
+                <input type="number" className="field" value={editForm.lat} onChange={(e) => setEditForm((f) => ({ ...f, lat: e.target.value }))} style={{ marginBottom: 0 }} placeholder="45.7755" />
+              </div>
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Longitudine</div>
+                <input type="number" className="field" value={editForm.lon} onChange={(e) => setEditForm((f) => ({ ...f, lon: e.target.value }))} style={{ marginBottom: 0 }} placeholder="8.8872" />
+              </div>
+              {editForm.lat && editForm.lon && (
+                <div style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--accent)" }}>
+                  ✓ Coordinate: {parseFloat(editForm.lat).toFixed(4)}, {parseFloat(editForm.lon).toFixed(4)}
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Categoria</div>
+                <select className="field" value={editForm.categoria} onChange={(e) => setEditForm((f) => ({ ...f, categoria: e.target.value }))} style={{ marginBottom: 0 }}>
+                  <option value="">— seleziona —</option>
+                  {CATEGORIE.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Proposta commerciale</div>
+                <textarea className="field" rows={3} value={editForm.proposta} onChange={(e) => setEditForm((f) => ({ ...f, proposta: e.target.value }))} style={{ marginBottom: 0, resize: "vertical" }} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
+              <button onClick={() => setShowEditModal(false)} style={{ flex: 1, padding: "9px", fontSize: "13px", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontFamily: "inherit" }}>
+                Annulla
+              </button>
+              <button className="btn-primary" onClick={handleSaveEdit} disabled={editLoading || !editForm.nome.trim()} style={{ flex: 2, marginTop: 0, fontSize: "13px", padding: "9px" }}>
+                {editLoading ? "Salvataggio..." : "Salva modifiche"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showAddModal && (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={(e) => { if (e.target === e.currentTarget) setShowAddModal(false); }}
         >
-          <div style={{ background: "#fff", borderRadius: "var(--radius-md)", padding: "20px 22px", width: "420px", maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto", boxShadow: "var(--shadow-md)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
-              <span style={{ fontWeight: 700, fontSize: "14px", display: "flex", alignItems: "center", gap: "6px" }}>
+          <div style={{ background: "#fff", borderRadius: "var(--radius-md)", padding: "24px 28px", width: "620px", maxWidth: "96vw", maxHeight: "92vh", overflowY: "auto", boxShadow: "var(--shadow-md)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" }}>
+              <span style={{ fontWeight: 700, fontSize: "15px", display: "flex", alignItems: "center", gap: "8px" }}>
                 {addModalStep === "form" && (
                   <button onClick={() => setAddModalStep("url")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: "var(--text-2)", padding: 0, lineHeight: 1 }}>←</button>
                 )}
@@ -1679,7 +1851,7 @@ export default function App() {
 
             {addModalStep === "url" && (
               <>
-                <div style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "8px" }}>
+                <div style={{ fontSize: "12px", color: "var(--text-2)", marginBottom: "10px" }}>
                   Incolla un link Facebook o Google Maps per estrarre i dati automaticamente:
                 </div>
                 <input
@@ -1689,15 +1861,10 @@ export default function App() {
                   value={parseUrlInput}
                   onChange={(e) => setParseUrlInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleParseUrl()}
-                  style={{ marginBottom: "8px" }}
+                  style={{ marginBottom: "10px" }}
                 />
                 {parseError && <div style={{ fontSize: "11px", color: "var(--danger)", marginBottom: "8px" }}>{parseError}</div>}
-                <button
-                  className="btn-primary"
-                  onClick={handleParseUrl}
-                  disabled={parseLoading || !parseUrlInput.trim()}
-                  style={{ marginBottom: "8px" }}
-                >
+                <button className="btn-primary" onClick={handleParseUrl} disabled={parseLoading || !parseUrlInput.trim()} style={{ marginBottom: "10px" }}>
                   {parseLoading ? "Analisi in corso..." : "Analizza URL"}
                 </button>
                 <button
@@ -1711,85 +1878,67 @@ export default function App() {
 
             {addModalStep === "form" && (
               <>
-                {[
-                  { label: "Nome *", key: "nome", type: "text" },
-                  { label: "Comune", key: "comune", type: "text" },
-                  { label: "Telefono", key: "telefono", type: "text" },
-                  { label: "Email", key: "email", type: "text" },
-                  { label: "Sito web", key: "sito", type: "text" },
-                  { label: "Facebook", key: "facebook_url", type: "text" },
-                ].map(({ label, key, type }) => (
-                  <div key={key} style={{ marginBottom: "8px" }}>
-                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>{label}</div>
-                    <input
-                      type={type}
-                      className="field"
-                      value={manualForm[key]}
-                      onChange={(e) => setManualForm((f) => ({ ...f, [key]: e.target.value }))}
-                      style={{ marginBottom: 0 }}
-                    />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 16px", marginBottom: "10px" }}>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Nome *</div>
+                    <input type="text" className="field" value={manualForm.nome} onChange={(e) => setManualForm((f) => ({ ...f, nome: e.target.value }))} style={{ marginBottom: 0 }} />
                   </div>
-                ))}
-                <div style={{ marginBottom: "8px" }}>
-                  <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Indirizzo</div>
-                  <div style={{ display: "flex", gap: "6px" }}>
-                    <input
-                      type="text"
-                      className="field"
-                      placeholder="Via Roma 1, Varese"
-                      value={manualForm.indirizzo}
-                      onChange={(e) => setManualForm((f) => ({ ...f, indirizzo: e.target.value }))}
-                      style={{ marginBottom: 0, flex: 1 }}
-                    />
-                    <button
-                      type="button"
-                      onClick={handleGeocode}
-                      disabled={geocodeLoading || (!manualForm.indirizzo && !manualForm.comune)}
-                      title="Ricava coordinate dall'indirizzo"
-                      style={{ padding: "0 10px", fontSize: "11px", fontWeight: 600, background: "var(--accent-light)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
-                    >
-                      {geocodeLoading ? "..." : "📍 Geocodifica"}
-                    </button>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Comune</div>
+                    <input type="text" className="field" value={manualForm.comune} onChange={(e) => setManualForm((f) => ({ ...f, comune: e.target.value }))} style={{ marginBottom: 0 }} />
                   </div>
-                  {geocodeError && <div style={{ fontSize: "11px", color: "var(--danger)", marginTop: "3px" }}>{geocodeError}</div>}
-                </div>
-                <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Lat</div>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Telefono</div>
+                    <input type="text" className="field" value={manualForm.telefono} onChange={(e) => setManualForm((f) => ({ ...f, telefono: e.target.value }))} style={{ marginBottom: 0 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Email</div>
+                    <input type="text" className="field" value={manualForm.email} onChange={(e) => setManualForm((f) => ({ ...f, email: e.target.value }))} style={{ marginBottom: 0 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Sito web</div>
+                    <input type="text" className="field" value={manualForm.sito} onChange={(e) => setManualForm((f) => ({ ...f, sito: e.target.value }))} style={{ marginBottom: 0 }} />
+                  </div>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Facebook</div>
+                    <input type="text" className="field" value={manualForm.facebook_url} onChange={(e) => setManualForm((f) => ({ ...f, facebook_url: e.target.value }))} style={{ marginBottom: 0 }} />
+                  </div>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Indirizzo</div>
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <input type="text" className="field" placeholder="Via Roma 1, Varese" value={manualForm.indirizzo} onChange={(e) => setManualForm((f) => ({ ...f, indirizzo: e.target.value }))} style={{ marginBottom: 0, flex: 1 }} />
+                      <button type="button" onClick={handleGeocode} disabled={geocodeLoading || (!manualForm.indirizzo && !manualForm.comune)} style={{ padding: "0 12px", fontSize: "11px", fontWeight: 600, background: "var(--accent-light)", color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
+                        {geocodeLoading ? "..." : "📍 Geocodifica"}
+                      </button>
+                    </div>
+                    {geocodeError && <div style={{ fontSize: "11px", color: "var(--danger)", marginTop: "3px" }}>{geocodeError}</div>}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Latitudine</div>
                     <input type="number" className="field" value={manualForm.lat} onChange={(e) => setManualForm((f) => ({ ...f, lat: e.target.value }))} style={{ marginBottom: 0 }} placeholder="45.7755" />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Lon</div>
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Longitudine</div>
                     <input type="number" className="field" value={manualForm.lon} onChange={(e) => setManualForm((f) => ({ ...f, lon: e.target.value }))} style={{ marginBottom: 0 }} placeholder="8.8872" />
                   </div>
-                </div>
-                {manualForm.lat && manualForm.lon && (
-                  <div style={{ fontSize: "11px", color: "var(--accent)", marginBottom: "8px" }}>
-                    ✓ Coordinate: {parseFloat(manualForm.lat).toFixed(4)}, {parseFloat(manualForm.lon).toFixed(4)}
+                  {manualForm.lat && manualForm.lon && (
+                    <div style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--accent)" }}>
+                      ✓ Coordinate: {parseFloat(manualForm.lat).toFixed(4)}, {parseFloat(manualForm.lon).toFixed(4)}
+                    </div>
+                  )}
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Categoria</div>
+                    <select className="field" value={manualForm.categoria} onChange={(e) => setManualForm((f) => ({ ...f, categoria: e.target.value }))} style={{ marginBottom: 0 }}>
+                      <option value="">— seleziona —</option>
+                      {CATEGORIE.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   </div>
-                )}
-                <div style={{ marginBottom: "12px" }}>
-                  <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-2)", marginBottom: "3px" }}>Categoria</div>
-                  <select
-                    className="field"
-                    value={manualForm.categoria}
-                    onChange={(e) => setManualForm((f) => ({ ...f, categoria: e.target.value }))}
-                    style={{ marginBottom: 0 }}
-                  >
-                    <option value="">— seleziona —</option>
-                    {CATEGORIE.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
                 </div>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: "8px", fontSize: "12px", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontFamily: "inherit" }}>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: "9px", fontSize: "13px", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontFamily: "inherit" }}>
                     Annulla
                   </button>
-                  <button
-                    className="btn-primary"
-                    onClick={handleSaveLead}
-                    disabled={saveLeadLoading || !manualForm.nome.trim()}
-                    style={{ flex: 1, marginTop: 0 }}
-                  >
+                  <button className="btn-primary" onClick={handleSaveLead} disabled={saveLeadLoading || !manualForm.nome.trim()} style={{ flex: 2, marginTop: 0, fontSize: "13px", padding: "9px" }}>
                     {saveLeadLoading ? "Salvataggio..." : "Salva lead"}
                   </button>
                 </div>

@@ -990,6 +990,13 @@ _LEAD_EDITABLE_FIELDS = {
     "telefono",
     "sito",
     "criticita",
+    "nome",
+    "categoria",
+    "comune",
+    "indirizzo",
+    "lat",
+    "lon",
+    "facebook_url",
 }
 
 

@@ -294,6 +294,15 @@ morpheus/
 
 ---
 
+## Contributori
+
+| Chi | Ruolo |
+|-----|-------|
+| [Marco Barlera](https://github.com/marcobarlera) | Ideazione, design, sviluppo principale |
+| [Claude Sonnet](https://claude.ai) (Anthropic) | Co-sviluppatore AI — architettura, implementazione feature, debugging (sessioni 1–8) |
+
+---
+
 ## Stack
 
 | Strato | Tecnologia |

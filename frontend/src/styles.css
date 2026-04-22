@@ -1120,6 +1120,28 @@ button:disabled {
   opacity: 1;
 }
 
+.lead-card-edit-btn {
+  margin-top: 8px;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+  padding: 2px 3px;
+  line-height: 1;
+}
+
+.lead-card-outer:hover .lead-card-edit-btn {
+  opacity: 1;
+}
+
+.lead-card-edit-btn:hover {
+  color: var(--accent);
+}
+
 .lead-card-outer .lead-card {
   flex: 1;
   min-width: 0;

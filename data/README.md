@@ -25,13 +25,13 @@ data/
 
 | Campo | Tipo | Note |
 |-------|------|------|
-| `osm_url` | TEXT PK | Chiave: `dataset_id::osm_url` · `foursquare://fsq_id` · `manual://uuid` |
+| `osm_url` | TEXT PK | Chiave: `dataset_id::osm_url` · `foursquare://fsq_id` · `gplaces://place_id` · `manual://uuid` |
 | `nome` | TEXT | Nome attività |
 | `lat`, `lon` | REAL | Coordinate GPS (null per lead manuali senza geocodifica) |
 | `priorita` | TEXT | ALTISSIMA / ALTA / MEDIA / BASSA / MOLTO BASSA |
 | `distanza_km` | REAL | Dal punto di riferimento del dataset |
 | `categoria` | TEXT | Una delle 9 macro-categorie |
-| `sottocategoria` | TEXT | Tag OSM o categoria Foursquare originale |
+| `sottocategoria` | TEXT | Tag OSM, categoria Foursquare o `primaryTypeDisplayName` Google Places |
 | `comune` | TEXT | Città |
 | `indirizzo` | TEXT | Via + numero civico (da `addr:street` + `addr:housenumber` OSM) |
 | `telefono`, `email`, `sito` | TEXT | Contatti |

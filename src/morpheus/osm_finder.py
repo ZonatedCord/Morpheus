@@ -33,6 +33,33 @@ OVERPASS_ENDPOINTS = (
     "https://overpass-api.de/api/interpreter",
 )
 FSQ_SEARCH_URL = "https://api.foursquare.com/v3/places/search"
+GOOGLE_PLACES_NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
+
+# Field mask Google Places (New): Essentials + Pro.
+# "websiteUri" e "nationalPhoneNumber" sono Pro → billing Pro SKU (~$0.036/call).
+# NON aggiungere campi Enterprise (rating, opening hours, photos) senza valutare il costo.
+GOOGLE_PLACES_FIELD_MASK = ",".join(
+    (
+        "places.id",
+        "places.displayName",
+        "places.formattedAddress",
+        "places.location",
+        "places.types",
+        "places.primaryType",
+        "places.primaryTypeDisplayName",
+        "places.addressComponents",
+        "places.websiteUri",
+        "places.nationalPhoneNumber",
+    )
+)
+
+# Limiti free tier — qualunque sforo sono soldi reali.
+# Free credit $200/mese ≈ 5.500 chiamate Pro. Con default sotto, una scansione costa < $0.30.
+GOOGLE_PLACES_ENABLED: bool = os.environ.get("GOOGLE_PLACES_ENABLED", "1").strip() not in {"0", "false", "no", ""}
+GOOGLE_PLACES_MAX_CALLS: int = int(os.environ.get("GOOGLE_PLACES_MAX_CALLS", "15"))
+GOOGLE_PLACES_MAX_RESULTS: int = int(os.environ.get("GOOGLE_PLACES_MAX_RESULTS", "180"))
+GOOGLE_PLACES_PAGE_SIZE: int = 20           # hard cap lato Google (searchNearby)
+GOOGLE_PLACES_MAX_RADIUS_M: int = 50_000    # hard cap lato Google (searchNearby)
 
 DEFAULT_REFERENCE_QUERY = "Vedano Olona, Varese, Lombardia, Italia"
 DEFAULT_PROVINCE_QUERY = "Provincia di Varese, Lombardia, Italia"
@@ -127,6 +154,25 @@ OFFICE_VALUES = {
 SHOP_BEAUTY_VALUES = {"beauty", "cosmetics", "hairdresser", "perfumery"}
 SHOP_HEALTH_VALUES = {"chemist", "hearing_aids", "medical_supply", "optician"}
 SHOP_FITNESS_VALUES = {"sports"}
+AUTOMOTIVE_AMENITY_VALUES = {"car_rental", "car_sharing", "car_wash", "fuel", "charging_station"}
+SHOP_AUTOMOTIVE_VALUES = {
+    "bicycle",
+    "car",
+    "car_parts",
+    "car_repair",
+    "motorcycle",
+    "motorcycle_repair",
+    "tyres",
+}
+EDUCATION_AMENITY_VALUES = {
+    "dance_school",
+    "driving_school",
+    "language_school",
+    "music_school",
+    "training",
+    "tutoring",
+}
+OFFICE_EDUCATION_VALUES = {"educational_institution", "tutoring", "research"}
 
 CATEGORY_ORDER = {
     "Ristorazione": 0,
@@ -138,9 +184,31 @@ CATEGORY_ORDER = {
     "Artigiani": 6,
     "Negozi": 7,
     "Intrattenimento": 8,
+    "Automotive": 9,
+    "Formazione": 10,
 }
 
 FRIENDLY_VALUE_LABELS = {
+    "bicycle": "Negozio Bici",
+    "car": "Concessionaria Auto",
+    "car_parts": "Autoricambi",
+    "car_rental": "Autonoleggio",
+    "car_repair": "Officina",
+    "car_sharing": "Car Sharing",
+    "car_wash": "Autolavaggio",
+    "charging_station": "Colonnina Ricarica",
+    "dance_school": "Scuola Danza",
+    "driving_school": "Scuola Guida",
+    "educational_institution": "Scuola / Ente Formazione",
+    "fuel": "Distributore Carburante",
+    "language_school": "Scuola Lingue",
+    "motorcycle": "Concessionaria Moto",
+    "motorcycle_repair": "Officina Moto",
+    "music_school": "Scuola Musica",
+    "research": "Centro Ricerca",
+    "training": "Centro Formazione",
+    "tutoring": "Ripetizioni",
+    "tyres": "Gommista",
     "accountant": "Commercialista",
     "alpine_hut": "Rifugio",
     "apartment": "Appartamenti",
@@ -240,6 +308,24 @@ _FSQ_CATEGORY_MAP: list[tuple[str, str]] = [
     ("tech", "Servizi Professionali"),
     ("it service", "Servizi Professionali"),
     ("financial", "Servizi Professionali"),
+    ("auto repair", "Automotive"),
+    ("car wash", "Automotive"),
+    ("gas station", "Automotive"),
+    ("auto dealer", "Automotive"),
+    ("car dealer", "Automotive"),
+    ("automotive", "Automotive"),
+    ("motorcycle", "Automotive"),
+    ("tire", "Automotive"),
+    ("tyre", "Automotive"),
+    ("driving school", "Formazione"),
+    ("language school", "Formazione"),
+    ("music school", "Formazione"),
+    ("dance school", "Formazione"),
+    ("school", "Formazione"),
+    ("tutoring", "Formazione"),
+    ("education", "Formazione"),
+    ("college", "Formazione"),
+    ("university", "Formazione"),
     ("craft", "Artigiani"),
     ("repair", "Artigiani"),
     ("workshop", "Artigiani"),
@@ -251,6 +337,92 @@ _FSQ_CATEGORY_MAP: list[tuple[str, str]] = [
     ("boutique", "Negozi"),
     ("market", "Negozi"),
 ]
+
+# Mapping nostra categoria → Google Places types (New API).
+# 11 categorie = 11 call/scan. A $0.036/call Pro SKU → ~$0.40/scan.
+# Free tier $200/mese ≈ 500 scan totali. Margine largo.
+# Per Negozi e Artigiani scegliamo type specifici per evitare risultati generici
+# di catene nazionali che saturano i 20 slot/chiamata.
+_GOOGLE_CATEGORY_TYPES: dict[str, tuple[str, ...]] = {
+    "Ristorazione": (
+        "restaurant",
+        "cafe",
+        "bar",
+        "bakery",
+        "coffee_shop",
+        "ice_cream_shop",
+        "meal_takeaway",
+    ),
+    "Ospitalita'": (
+        "lodging",
+    ),
+    "Beauty & Benessere": (
+        "beauty_salon",
+        "hair_salon",
+        "spa",
+        "barber_shop",
+        "nail_salon",
+    ),
+    "Fitness & Sport": (
+        "gym",
+        "fitness_center",
+    ),
+    "Sanita'": (
+        "doctor",
+        "dentist",
+        "pharmacy",
+        "hospital",
+        "physiotherapist",
+        "veterinary_care",
+    ),
+    "Servizi Professionali": (
+        "lawyer",
+        "accounting",
+        "insurance_agency",
+        "real_estate_agency",
+        "travel_agency",
+    ),
+    "Intrattenimento": (
+        "movie_theater",
+        "night_club",
+    ),
+    "Automotive": (
+        "car_dealer",
+        "car_rental",
+        "car_repair",
+        "car_wash",
+        "gas_station",
+    ),
+    "Formazione": (
+        "driving_school",
+        "school",
+        "primary_school",
+        "secondary_school",
+        "preschool",
+    ),
+    "Artigiani": (
+        "plumber",
+        "electrician",
+        "painter",
+        "locksmith",
+        "roofing_contractor",
+        "general_contractor",
+    ),
+    "Negozi": (
+        "clothing_store",
+        "shoe_store",
+        "jewelry_store",
+        "book_store",
+        "furniture_store",
+        "hardware_store",
+        "florist",
+        "electronics_store",
+    ),
+}
+
+_GOOGLE_TYPE_TO_CATEGORY: dict[str, str] = {
+    gtype: cat for cat, gtypes in _GOOGLE_CATEGORY_TYPES.items() for gtype in gtypes
+}
 
 
 @dataclass(frozen=True)
@@ -320,6 +492,26 @@ SEARCH_GROUPS = (
         label="Negozi",
         key="shop",
         values=None,
+    ),
+    SearchGroup(
+        label="Automotive",
+        key="amenity",
+        values=tuple(sorted(AUTOMOTIVE_AMENITY_VALUES)),
+    ),
+    SearchGroup(
+        label="Automotive",
+        key="shop",
+        values=tuple(sorted(SHOP_AUTOMOTIVE_VALUES)),
+    ),
+    SearchGroup(
+        label="Formazione",
+        key="amenity",
+        values=tuple(sorted(EDUCATION_AMENITY_VALUES)),
+    ),
+    SearchGroup(
+        label="Formazione",
+        key="office",
+        values=tuple(sorted(OFFICE_EDUCATION_VALUES)),
     ),
 )
 
@@ -502,12 +694,19 @@ class MorpheusFinder:
                     return "Sanita'", self._friendly_value(raw_value)
                 if raw_value in ENTERTAINMENT_VALUES:
                     return "Intrattenimento", self._friendly_value(raw_value)
+                if raw_value in AUTOMOTIVE_AMENITY_VALUES:
+                    return "Automotive", self._friendly_value(raw_value)
+                if raw_value in EDUCATION_AMENITY_VALUES:
+                    return "Formazione", self._friendly_value(raw_value)
             elif key == "tourism" and raw_value in HOSPITALITY_VALUES:
                 return "Ospitalita'", self._friendly_value(raw_value)
             elif key == "leisure" and raw_value in FITNESS_VALUES:
                 return "Fitness & Sport", self._friendly_value(raw_value)
-            elif key == "office" and raw_value in OFFICE_VALUES:
-                return "Servizi Professionali", self._friendly_value(raw_value)
+            elif key == "office":
+                if raw_value in OFFICE_EDUCATION_VALUES:
+                    return "Formazione", self._friendly_value(raw_value)
+                if raw_value in OFFICE_VALUES:
+                    return "Servizi Professionali", self._friendly_value(raw_value)
             elif key == "craft":
                 return "Artigiani", self._friendly_value(raw_value)
             elif key == "shop":
@@ -517,6 +716,8 @@ class MorpheusFinder:
                     return "Sanita'", self._friendly_value(raw_value)
                 if raw_value in SHOP_FITNESS_VALUES:
                     return "Fitness & Sport", self._friendly_value(raw_value)
+                if raw_value in SHOP_AUTOMOTIVE_VALUES:
+                    return "Automotive", self._friendly_value(raw_value)
                 return "Negozi", self._friendly_value(raw_value)
 
         subtype = self._first_tag(tags, fallback_group.key) or fallback_group.label
@@ -881,6 +1082,192 @@ out body center qt;
 
         return added
 
+    # ── Google Places (New) ────────────────────────────────────────────────────
+
+    def _google_place_to_record(self, place: dict[str, Any]) -> dict[str, Any] | None:
+        place_id = (place.get("id") or "").strip()
+
+        display = place.get("displayName")
+        name = ""
+        if isinstance(display, dict):
+            name = (display.get("text") or "").strip()
+        if not name or len(name) < 4:
+            return None
+
+        if self._normalize_text(name) in GENERIC_NAMES:
+            return None
+
+        location = place.get("location") or {}
+        lat = location.get("latitude")
+        lon = location.get("longitude")
+        if lat is None or lon is None:
+            return None
+        lat = float(lat)
+        lon = float(lon)
+
+        primary_type = (place.get("primaryType") or "").strip()
+        category = _GOOGLE_TYPE_TO_CATEGORY.get(primary_type)
+        if not category:
+            for candidate in place.get("types") or []:
+                if candidate in _GOOGLE_TYPE_TO_CATEGORY:
+                    category = _GOOGLE_TYPE_TO_CATEGORY[candidate]
+                    primary_type = primary_type or candidate
+                    break
+        if not category:
+            return None
+
+        primary_display = place.get("primaryTypeDisplayName")
+        subcategory = ""
+        if isinstance(primary_display, dict):
+            subcategory = (primary_display.get("text") or "").strip()
+        if not subcategory:
+            subcategory = self._friendly_value(primary_type) if primary_type else "N/D"
+
+        website = (place.get("websiteUri") or "").strip()
+        phone = (place.get("nationalPhoneNumber") or "").strip()
+        address = (place.get("formattedAddress") or "").strip() or "N/D"
+
+        city = ""
+        for comp in place.get("addressComponents") or []:
+            types = comp.get("types") or []
+            if "locality" in types or "postal_town" in types:
+                city = (comp.get("longText") or "").strip()
+                break
+            if not city and "administrative_area_level_3" in types:
+                city = (comp.get("longText") or "").strip()
+
+        distance_km = self._haversine_km(
+            self.reference_point["lat"],
+            self.reference_point["lon"],
+            lat,
+            lon,
+        )
+        has_website = bool(website)
+        comp_score = self._composite_score(distance_km, has_website, category)
+
+        return {
+            "Data Ricerca": self.timestamp,
+            "Priorita'": self._composite_priority(comp_score),
+            "Distanza da Vedano Olona (km)": f"{distance_km:.2f}",
+            "Categoria": category,
+            "Sottocategoria": subcategory,
+            "Nome Attivita'": name,
+            "Comune": city or "N/D",
+            "Indirizzo": address,
+            "Provincia": "Varese",
+            "Telefono": phone or "N/D",
+            "Email": "N/D",
+            "Sito Web": website or "N/D",
+            "Ha Sito Web": "SI" if has_website else "NO",
+            "Opportunita' Web": self._website_opportunity(website, ""),
+            "Fonte": "Google Places",
+            "OSM URL": f"gplaces://{place_id}" if place_id else "N/D",
+            "Note": "Lead da Google Places — verificare dati",
+            "Lat": round(lat, 6),
+            "Lon": round(lon, 6),
+            "_lat": lat,
+            "_lon": lon,
+            "_composite_score": comp_score,
+        }
+
+    def _fetch_google_places(self, api_key: str) -> int:
+        """Interroga Google Places API (New) e aggiunge i risultati a self.results.
+
+        Free tier safety:
+          - Usa searchNearby (1 call per categoria, 20 risultati max/call).
+          - Field mask limitato a Essentials + Pro (no Enterprise SKU).
+          - Hard cap su numero di call e risultati totali via env.
+          - Aborta su 403 (chiave invalida) per evitare di bruciare quota.
+        """
+        if not GOOGLE_PLACES_ENABLED:
+            print("  ! Google Places disabilitato via GOOGLE_PLACES_ENABLED=0")
+            return 0
+
+        radius_m = min(int(self.max_distance_km * 1000), GOOGLE_PLACES_MAX_RADIUS_M)
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": GOOGLE_PLACES_FIELD_MASK,
+        }
+
+        added = 0
+        calls_used = 0
+        total_results = 0
+
+        for category, included_types in _GOOGLE_CATEGORY_TYPES.items():
+            if calls_used >= GOOGLE_PLACES_MAX_CALLS:
+                print(
+                    f"    ! Google Places: cap call raggiunto ({GOOGLE_PLACES_MAX_CALLS}), stop"
+                )
+                break
+            if total_results >= GOOGLE_PLACES_MAX_RESULTS:
+                print(
+                    f"    ! Google Places: cap risultati raggiunto ({GOOGLE_PLACES_MAX_RESULTS}), stop"
+                )
+                break
+
+            body = {
+                "includedTypes": list(included_types),
+                "maxResultCount": GOOGLE_PLACES_PAGE_SIZE,
+                "languageCode": "it",
+                "regionCode": "IT",
+                "locationRestriction": {
+                    "circle": {
+                        "center": {
+                            "latitude": self.reference_point["lat"],
+                            "longitude": self.reference_point["lon"],
+                        },
+                        "radius": float(radius_m),
+                    }
+                },
+            }
+
+            try:
+                response = self.session.post(
+                    GOOGLE_PLACES_NEARBY_URL,
+                    headers=headers,
+                    json=body,
+                    timeout=30,
+                )
+                calls_used += 1
+
+                if response.status_code == 429:
+                    print(f"    ! Google Places: rate limit su {category}, pausa 5s")
+                    time.sleep(5)
+                    continue
+                if response.status_code in {401, 403}:
+                    print(
+                        f"    ! Google Places: chiave rifiutata ({response.status_code}), abort"
+                    )
+                    break
+                response.raise_for_status()
+                payload = response.json()
+            except (requests.RequestException, ValueError) as exc:
+                print(f"    ! Google Places errore su {category}: {exc}")
+                continue
+
+            places = payload.get("places") or []
+            cat_added = 0
+            for place in places:
+                record = self._google_place_to_record(place)
+                if record is None:
+                    continue
+                self.results.append(record)
+                cat_added += 1
+                total_results += 1
+                if total_results >= GOOGLE_PLACES_MAX_RESULTS:
+                    break
+            added += cat_added
+            print(f"    -> Google Places {category}: {cat_added} aggiunti")
+            time.sleep(0.3)
+
+        print(
+            f"  -> Google Places: {added} totali "
+            f"(calls: {calls_used}/{GOOGLE_PLACES_MAX_CALLS}, "
+            f"results: {total_results}/{GOOGLE_PLACES_MAX_RESULTS})"
+        )
+        return added
+
     # ── Dedup / sort / output ──────────────────────────────────────────────────
 
     def cleanup_duplicates(self) -> None:
@@ -945,14 +1332,15 @@ out body center qt;
             per_priority[priority] = per_priority.get(priority, 0) + 1
 
         fsq_count = sum(1 for item in self.results if item.get("Fonte") == "Foursquare")
-        osm_count = len(self.results) - fsq_count
+        gplaces_count = sum(1 for item in self.results if item.get("Fonte") == "Google Places")
+        osm_count = len(self.results) - fsq_count - gplaces_count
 
         print("\n" + "=" * 78)
         print("RIEPILOGO")
         print("=" * 78)
         print(
             f"Totale attivita': {len(self.results)}"
-            f"  (OSM: {osm_count}, Foursquare: {fsq_count})"
+            f"  (OSM: {osm_count}, Foursquare: {fsq_count}, Google: {gplaces_count})"
         )
         print(f"Senza sito web: {without_site}")
         print(f"Con sito web:   {len(self.results) - without_site}")
@@ -973,22 +1361,22 @@ out body center qt;
 
     def run(self) -> None:
         print("\n" + "=" * 78)
-        print("MORPHEUS — RACCOLTA LEAD OSM/OVERPASS + FOURSQUARE")
+        print("MORPHEUS — RACCOLTA LEAD OSM/OVERPASS + FOURSQUARE + GOOGLE PLACES")
         print("=" * 78)
         print(f"Avvio: {self.timestamp}")
 
-        print(f"\n[1/5] Geocodifico il centro di priorita': {self.reference_query}")
+        print(f"\n[1/6] Geocodifico il centro di priorita': {self.reference_query}")
         self._notify_progress("geocode", 5, f"Geocodifico il centro: {self.reference_query}")
         self.geocode_reference_point()
 
-        print(f"[2/5] Individuo l'area OSM della provincia: {self.province_query}")
+        print(f"[2/6] Individuo l'area OSM della provincia: {self.province_query}")
         self._notify_progress("resolve_area", 10, f"Individuo l'area OSM: {self.province_query}")
         self.resolve_area_id()
 
-        print("[3/5] Raccolgo attivita' commerciali via Overpass")
+        print("[3/6] Raccolgo attivita' commerciali via Overpass")
         for index, group in enumerate(SEARCH_GROUPS, start=1):
             print(f"  - Query {index}/{len(SEARCH_GROUPS)}: {group.label}")
-            query_progress = 15 + int(((index - 1) / len(SEARCH_GROUPS)) * 55)
+            query_progress = 15 + int(((index - 1) / len(SEARCH_GROUPS)) * 50)
             self._notify_progress(
                 "fetch_group",
                 query_progress,
@@ -1012,7 +1400,7 @@ out body center qt;
             print(f"    -> elementi utili: {added}")
             self._notify_progress(
                 "fetch_group_done",
-                15 + int((index / len(SEARCH_GROUPS)) * 55),
+                15 + int((index / len(SEARCH_GROUPS)) * 50),
                 f"{group.label}: {added} elementi utili",
                 current_group=group.label,
                 current_index=index,
@@ -1021,21 +1409,31 @@ out body center qt;
             )
             time.sleep(1)
 
-        print("[4/5] Integro dati Foursquare Places")
+        print("[4/6] Integro dati Foursquare Places")
         fsq_key = os.environ.get("FSQ_API_KEY", "").strip()
         if fsq_key:
-            self._notify_progress("foursquare", 72, "Integro dati Foursquare...")
+            self._notify_progress("foursquare", 68, "Integro dati Foursquare...")
             fsq_added = self._fetch_foursquare(fsq_key)
             print(f"  -> Foursquare: {fsq_added} attivita' aggiunte")
         else:
             print("  ! FSQ_API_KEY non impostata, skip Foursquare")
-        self._notify_progress("foursquare_done", 76, "Foursquare completato")
+        self._notify_progress("foursquare_done", 72, "Foursquare completato")
 
-        self._notify_progress("dedupe", 80, "Pulisco duplicati e ordino i lead")
+        print("[5/6] Integro dati Google Places")
+        gkey = os.environ.get("GOOGLE_PLACES_API_KEY", "").strip()
+        if gkey:
+            self._notify_progress("google_places", 74, "Integro dati Google Places...")
+            g_added = self._fetch_google_places(gkey)
+            print(f"  -> Google Places: {g_added} attivita' aggiunte")
+        else:
+            print("  ! GOOGLE_PLACES_API_KEY non impostata, skip Google Places")
+        self._notify_progress("google_places_done", 80, "Google Places completato")
+
+        self._notify_progress("dedupe", 84, "Pulisco duplicati e ordino i lead")
         self.cleanup_duplicates()
         self.sort_results()
 
-        print(f"[5/5] Salvo il CSV ordinato per score in {project_relative(self.output_file)}")
+        print(f"[6/6] Salvo il CSV ordinato per score in {project_relative(self.output_file)}")
         self._notify_progress("save_csv", 90, "Salvo il CSV del popolamento")
         self.save_csv()
         self._notify_progress("summary", 97, "Calcolo il riepilogo finale")

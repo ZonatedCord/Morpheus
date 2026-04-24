@@ -11,12 +11,26 @@ La prima volta popola il database con:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from threading import Lock, Thread
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# Carica .env senza dipendenze esterne
+_env_file = Path(__file__).parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _key, _, _val = _line.partition("=")
+        _key = _key.strip()
+        _val = _val.strip().strip('"').strip("'")
+        if _key and _key not in os.environ:
+            os.environ[_key] = _val
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -1265,6 +1279,7 @@ def api_leads():
             "rilevanza_score": row.get("rilevanza_score"),
             "facebook_url": row.get("facebook_url") or "",
             "indirizzo": row.get("indirizzo") or "",
+            "fonte": row.get("fonte") or "",
         }
         for row in leads
     ]
@@ -1389,6 +1404,7 @@ def api_create_lead():
         "rilevanza_score": lead.get("rilevanza_score"),
         "facebook_url": lead.get("facebook_url", ""),
         "indirizzo": lead.get("indirizzo", ""),
+        "fonte": lead.get("fonte", ""),
     }), 201
 
 

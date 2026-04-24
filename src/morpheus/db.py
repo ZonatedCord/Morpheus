@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS attivita (
     in_hotlist            INTEGER DEFAULT 0,
     rilevanza_score       INTEGER,
     rilevanza_motivazione TEXT DEFAULT '',
-    aggiornato_il         TEXT
+    aggiornato_il         TEXT,
+    fonte                 TEXT DEFAULT ''
 );
 """
 
@@ -118,6 +119,7 @@ ATTIVITA_COLUMNS = (
     "dataset_id",
     "source_osm_url",
     "aggiornato_il",
+    "fonte",
 )
 
 OPTIONAL_COLUMNS = {
@@ -126,6 +128,7 @@ OPTIONAL_COLUMNS = {
     "dataset_id": "ALTER TABLE attivita ADD COLUMN dataset_id TEXT DEFAULT ''",
     "source_osm_url": "ALTER TABLE attivita ADD COLUMN source_osm_url TEXT DEFAULT ''",
     "facebook_url": "ALTER TABLE attivita ADD COLUMN facebook_url TEXT DEFAULT ''",
+    "fonte": "ALTER TABLE attivita ADD COLUMN fonte TEXT DEFAULT ''",
 }
 
 LEGACY_DATASET_ID = "vedano-olona-varese-lombardia-italia"
@@ -414,7 +417,11 @@ def import_from_csv(
                 lat = lon = None
 
             try:
-                distanza_km = float(row.get("Distanza da Vedano Olona (km)") or 0)
+                distanza_km = float(
+                    row.get("Distanza (km)")
+                    or row.get("Distanza da Vedano Olona (km)")
+                    or 0
+                )
             except ValueError:
                 distanza_km = 0.0
 
@@ -468,6 +475,7 @@ def import_from_csv(
                     resolved_dataset_id,
                     source_record_id,
                     now,
+                    (row.get("Fonte") or "").strip(),
                 )
             )
 

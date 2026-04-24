@@ -42,27 +42,29 @@ Sotto il cofano: raccoglie dati da **OpenStreetMap**, **Foursquare** e **Google 
 | Feature | In due righe |
 |---------|--------------|
 | **Scansione OSM** | 16 query Overpass su 11 categorie merceologiche |
-| **Foursquare** | POI aggiuntivi via Places API v3 (se hai la chiave) |
-| **Google Places** | POI aggiuntivi via Places API (New) con safety-cap anti-bolletta |
+| **Foursquare** | POI aggiuntivi via `places-api.foursquare.com` (se hai la chiave) |
+| **Google Places** | ~130 tipi verificati · grid search NxM su tutta la provincia · sito web e telefono inclusi |
 | **Scoring composito** | Priorità basata su distanza + assenza sito + categoria target |
 | **Score personalizzato** | Slider in-app per ribilanciare i pesi senza toccare il DB |
+| **Filtro fonte dati** | Chip UI per vedere solo OSM / Foursquare / Google Places / Manuale |
 | **Arricchimento Facebook** | Trova i profili pubblici via Brave + DuckDuckGo (~2 req/s) |
 | **Verifica siti morti** | Check HEAD/GET in parallelo, badge sui domini scaduti |
 | **Aggiunta manuale** | Incolla un URL Facebook o Google Maps, il resto lo estrae lui |
 | **Bulk actions** | Selezione multipla, cambio stato, export CSV filtrato |
 | **Dataset multipli** | Una scansione per area, unibili tra loro |
 | **Job asincroni** | Scansioni in background, polling live, riprende dopo un refresh |
+| **Navigazione frecce** | Con un lead aperto, ↑/↓ scorrono la lista senza toccare il mouse |
 
 ---
 
 ## Come funziona
 
 ```
-1. Geocodifica      Nominatim risolve il punto di riferimento → lat/lon
+1. Geocodifica      Nominatim risolve il punto di riferimento → lat/lon + bounding box provincia
 2. Query Overpass   16 query OSM per categoria → attività grezze
 3. Foursquare       Query circolare opzionale → POI aggiuntivi
-4. Google Places    searchNearby (New) opzionale → POI aggiuntivi (cap free tier)
-5. Deduplicazione   Chiave (nome_slug, lat_3d, lon_3d) cross-source
+4. Google Places    Grid NxM su bbox provincia · ~130 tipi (Table A ufficiale) · rankPreference=DISTANCE
+5. Deduplicazione   Chiave (nome_slug, lat_3d, lon_3d) cross-source + seen_place_ids per cella
 6. Scoring          Score composito [0,1] → fascia di priorità
 7. CSV              Salvataggio in data/output/osm/runs/
 8. Import DB        SQLite — preserva score LLM esistenti
@@ -70,6 +72,10 @@ Sotto il cofano: raccoglie dati da **OpenStreetMap**, **Foursquare** e **Google 
 ```
 
 Un click parte la pipeline, che gira in background. Il frontend fa polling ogni 1.5s e aggiorna la mappa quando finisce.
+
+### Google Places — grid search
+
+Per coprire un'intera provincia senza restare vincolati al limite di 20 risultati per chiamata, Morpheus suddivide il bounding box Nominatim in una griglia NxM (default 3×2 = 6 celle). Ogni cella viene interrogata separatamente con raggio ridotto (`diagonale_cella / 2 × 1.3`, max 50 km). I `place_id` duplicati tra celle vengono scartati prima di salvare nel DB.
 
 ---
 
@@ -161,7 +167,8 @@ I pesi si ribilanciano in tempo reale dalla sidebar — il database resta intatt
 │ · Facebook      │  Viewport culling + padding   │ · Bulk selection   │
 │ · Siti morti    │                               │ · Export CSV       │
 │ · Filtri mappa  │                               │ · +Aggiunta manuale│
-│ · Score custom  │                               │                    │
+│ · Score custom  │                               │ · ↑/↓ navigazione  │
+│ · Fonte dati    │                               │                    │
 └─────────────────┴──────────────────────────────┴────────────────────┘
 ```
 
@@ -171,6 +178,12 @@ I pesi si ribilanciano in tempo reale dalla sidebar — il database resta intatt
 3. Oppure scrivi tutto a mano
 4. `📍 Geocodifica` ricava lat/lon dall'indirizzo
 5. Salva — il lead compare subito in cima
+
+**Filtro fonte dati:**
+Chip nella sidebar per filtrare i lead per origine (`🗺 OSM`, `📍 Foursquare`, `🔍 Google`, `✏️ Manuale`). Selezionandone uno la mappa fa auto-fit sui lead di quella fonte.
+
+**Navigazione da tastiera:**
+Con un lead selezionato nella lista di destra, premi `↑` / `↓` per passare al precedente/successivo. La lista scorre automaticamente e la mappa si centra sul lead.
 
 **Arricchimento Facebook:**
 Cerca la pagina pubblica di ogni attività su Brave Search e DuckDuckGo, ~2 richieste/secondo, tollerante ai rate limit. I lead già processati (trovati o meno) non vengono ri-cercati.
@@ -189,7 +202,7 @@ Cerca la pagina pubblica di ogni attività su Brave Search e DuckDuckGo, ~2 rich
 | `/api/leads` | PATCH | Bulk update (stato, hotlist, ecc.) |
 | `/api/leads/<id>` | PATCH | Update singolo lead |
 | `/api/leads/export` | GET | Export CSV con filtri correnti |
-| `/api/leads/parse-url` | POST | Parsa URL Facebook/Google Maps |
+| `/api/leads/parse-url` | POST | Parsa URL Facebook/Google Maps → estrae nome, indirizzo, comune, coordinate |
 | `/api/jobs/<id>` | GET | Stato job asincrono |
 | `/api/geocode` | GET | Geocodifica via Nominatim |
 | `/api/comuni` | GET | Lista comuni per autocomplete |
@@ -252,23 +265,35 @@ Tutte opzionali. Copia `.env.example` in `.env` e compila ciò che serve.
 
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|
-| `FSQ_API_KEY` | — | Foursquare Places API v3. Senza, Foursquare viene saltato. |
-| `GOOGLE_PLACES_API_KEY` | — | Google Places API (New). Senza, Google viene saltato. |
+| `FSQ_API_KEY` | — | Foursquare Service API Key (da `foursquare.com/developer`). Senza, Foursquare viene saltato. |
+| `GOOGLE_PLACES_API_KEY` | — | Google Places API Key (da GCP Console). Senza, Google viene saltato. |
 | `GOOGLE_PLACES_ENABLED` | `1` | Kill-switch rapido: `0` disattiva Google anche con chiave presente. |
-| `GOOGLE_PLACES_MAX_CALLS` | `15` | Cap chiamate Google per scansione (11 usate di default). |
-| `GOOGLE_PLACES_MAX_RESULTS` | `180` | Cap risultati totali Google per scansione. |
+| `GOOGLE_PLACES_MAX_CALLS` | `200` | Cap chiamate Google per scansione (tipi × celle griglia). |
+| `GOOGLE_PLACES_MAX_RESULTS` | `3000` | Cap risultati totali Google per scansione. |
+| `GOOGLE_PLACES_GRID_COLS` | `3` | Colonne della griglia di ricerca sulla provincia. |
+| `GOOGLE_PLACES_GRID_ROWS` | `2` | Righe della griglia di ricerca sulla provincia. |
 | `SCORING_CATEGORIES` | — | Categorie target per `cat_target`. Es. `Ristorazione,Artigiani` |
 | `SCORING_MAX_DISTANCE_KM` | `50` | Distanza massima per normalizzare `dist_norm` |
 
 ### Google Places — free tier e costi
 
-Morpheus usa l'endpoint `searchNearby` dell'API New. Ogni scansione fa **1 chiamata per categoria** (11 in totale) con un field mask stretto (`Essentials + Pro`: `websiteUri`, `nationalPhoneNumber`).
+Morpheus usa l'endpoint `searchNearby` della **Places API (New)**. Ogni chiamata è classificata come **Nearby Search Pro** (include `websiteUri`, `nationalPhoneNumber`).
 
-- Tariffa Pro SKU: ~$0.036 per chiamata → **~$0.40 per scansione**
-- Credito gratuito Google Cloud: **$200/mese**
-- Capacità teorica nel free tier: **~500 scansioni/mese**
+**Chiamate per scansione (default 3×2):**
+- ~130 tipi verificati × 6 celle griglia = fino a **~780 chiamate** per scansione completa di una provincia
+- Il cap `GOOGLE_PLACES_MAX_CALLS = 200` limita la scansione a ~200 chiamate; alzalo se vuoi coprire tutti i tipi su tutte le celle
 
-Le env `GOOGLE_PLACES_MAX_CALLS` e `GOOGLE_PLACES_MAX_RESULTS` sono **hard cap** pensati per evitare sorprese: se l'API restituisce errori strani o la mappatura viene estesa, i cap impediscono di bruciare quota. Su `401`/`403` il client aborta subito senza ritentare. Non aumentarli senza prima stimare il costo in Google Cloud Console.
+**Free tier Google Places API (New):**
+
+| Metrica | Valore |
+|---------|--------|
+| Credito mensile gratuito | **5.000 richieste/mese** (Nearby Search) |
+| Costo oltre il limite | ~$0.032 per chiamata |
+| Scansioni/mese free (1 provincia, cap 200) | **~25** |
+| Scansioni/mese free (1 provincia, tutte le celle, ~780) | **~6** |
+| Scansioni/mese free (2 province, ~1.560) | **~3** |
+
+Le env `GOOGLE_PLACES_MAX_CALLS` e `GOOGLE_PLACES_MAX_RESULTS` sono **hard cap** anti-sorpresa. Su `401`/`403` il client aborta immediatamente. Non aumentarli senza prima stimare il consumo in Google Cloud Console → Quotas.
 
 ---
 
@@ -295,8 +320,8 @@ morpheus/
 │   └── scorizza_lead.py          # Scoring LLM via Ollama
 │
 ├── src/morpheus/
-│   ├── osm_finder.py             # MorpheusFinder — raccolta OSM + Foursquare
-│   ├── db.py                     # Tutte le operazioni SQLite
+│   ├── osm_finder.py             # MorpheusFinder — OSM + Foursquare + Google Places (grid)
+│   ├── db.py                     # Tutte le operazioni SQLite (incl. colonna fonte)
 │   ├── facebook_enrichment.py    # Ricerca profili Facebook pubblici
 │   ├── site_checker.py           # Verifica raggiungibilità siti web
 │   ├── url_parser.py             # Parsing URL Facebook/Google Maps + geocodifica
@@ -320,7 +345,7 @@ morpheus/
 | Geodati primari | OpenStreetMap via Overpass API |
 | Geocodifica | Nominatim (OSM, gratuito) |
 | Geodati secondari | Foursquare Places API v3 (opzionale) |
-| Geodati terziari | Google Places API (New) · endpoint `searchNearby` (opzionale) |
+| Geodati terziari | Google Places API (New) · `searchNearby` · grid search (opzionale) |
 | Ricerca Facebook | Brave Search + DuckDuckGo (scraping HTML) |
 | Frontend | React 18 · Vite · Leaflet |
 | Mappe satellite | Esri World Imagery (nessuna API key) |

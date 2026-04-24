@@ -69,6 +69,7 @@ function normalizeLeads(payload) {
     in_hotlist: Boolean(lead.in_hotlist),
     facebook_url: lead.facebook_url ?? "",
     indirizzo: lead.indirizzo ?? "",
+    fonte: lead.fonte ?? "",
   }));
 }
 
@@ -319,6 +320,7 @@ export default function App() {
   const [onlyWithoutSite, setOnlyWithoutSite] = useState(false);
   const [selectedPriorities, setSelectedPriorities] = useState(() => new Set(PRIORITY_OPTIONS));
   const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedFonte, setSelectedFonte] = useState("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isListCollapsed, setIsListCollapsed] = useState(false);
   const [mapBounds, setMapBounds] = useState(null);
@@ -410,6 +412,11 @@ export default function App() {
     [leads]
   );
 
+  const fonti = useMemo(
+    () => [...new Set(leads.map((lead) => lead.fonte).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [leads]
+  );
+
   const filteredLeads = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
     const result = leads.filter((lead) => {
@@ -424,11 +431,12 @@ export default function App() {
       const matchesCategory = !selectedCategory || lead.categoria === selectedCategory;
       const matchesFacebook = !onlyFacebook || (lead.facebook_url && lead.facebook_url !== "N/D" && lead.facebook_url !== "N/F");
       const matchesScartati = !hideScartati || lead.stato !== "Scartata";
-      return matchesSearch && matchesPriority && matchesHotlist && matchesSite && matchesCategory && matchesFacebook && matchesScartati;
+      const matchesFonte = !selectedFonte || lead.fonte === selectedFonte;
+      return matchesSearch && matchesPriority && matchesHotlist && matchesSite && matchesCategory && matchesFacebook && matchesScartati && matchesFonte;
     });
     filteredLeadsRef.current = result;
     return result;
-  }, [deferredSearch, hideScartati, leads, onlyFacebook, onlyHotlist, onlyWithoutSite, selectedCategory, selectedPriorities]);
+  }, [deferredSearch, hideScartati, leads, onlyFacebook, onlyHotlist, onlyWithoutSite, selectedCategory, selectedFonte, selectedPriorities]);
 
   const localScoringActive = useMemo(
     () =>
@@ -743,6 +751,18 @@ export default function App() {
       .catch(() => setComuni([]));
   }, [activeDatasetId]);
 
+  useEffect(() => {
+    if (!selectedFonte || !mapRef.current) return;
+    const withCoords = filteredLeads.filter((l) => l.lat != null && l.lon != null);
+    if (withCoords.length === 0) return;
+    const lats = withCoords.map((l) => l.lat);
+    const lons = withCoords.map((l) => l.lon);
+    mapRef.current.fitBounds(
+      [[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]],
+      { padding: [40, 40], maxZoom: 13, animate: true }
+    );
+  }, [selectedFonte]);
+
   const focusLead = useCallback((leadId, pan = true) => {
     const lead =
       filteredLeadsRef.current.find((item) => item.id === leadId) ||
@@ -866,6 +886,29 @@ export default function App() {
     }
   }, [selectedLeadId]);
 
+  // Navigazione frecce su/giù tra lead nella lista
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const list = scoredLeads;
+      if (!list.length) return;
+      const currentIdx = selectedLeadId ? list.findIndex((l) => l.id === selectedLeadId) : -1;
+      let nextIdx;
+      if (e.key === "ArrowDown") nextIdx = currentIdx < list.length - 1 ? currentIdx + 1 : 0;
+      else nextIdx = currentIdx > 0 ? currentIdx - 1 : list.length - 1;
+      const next = list[nextIdx];
+      if (!next) return;
+      focusLead(next.id);
+      pendingScrollLeadIdRef.current = next.id;
+      const el = document.querySelector(`[data-lead-id="${CSS.escape(next.id)}"]`);
+      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedLeadId, scoredLeads, focusLead]);
+
   function togglePriority(priority) {
     setSelectedPriorities((current) => {
       const next = new Set(current);
@@ -882,6 +925,7 @@ export default function App() {
     setOnlyFacebook(false);
     setHideScartati(true);
     setSelectedCategory("");
+    setSelectedFonte("");
     setSelectedPriorities(new Set(PRIORITY_OPTIONS));
     setSelectedBulkIds(new Set());
     setScoreWeights(DEFAULT_WEIGHTS);
@@ -1082,6 +1126,7 @@ export default function App() {
         setAddModalStep("url");
         setManualForm({ nome: "", categoria: "", comune: "", indirizzo: "", lat: "", lon: "", telefono: "", email: "", sito: "", facebook_url: "" });
         if (newLead?.id) {
+          resetFilters();
           pendingScrollLeadIdRef.current = newLead.id;
           setSelectedLeadId(newLead.id);
           setLeads((prev) => [newLead, ...prev]);
@@ -1463,6 +1508,22 @@ export default function App() {
                   ))}
                 </select>
               </label>
+
+              <div className="field">
+                <span>Fonte dati</span>
+                <div className="priority-grid">
+                  {fonti.map((f) => (
+                    <button
+                      type="button"
+                      key={f}
+                      className={`priority-chip ${selectedFonte === f ? "active" : ""}`}
+                      onClick={() => setSelectedFonte(selectedFonte === f ? "" : f)}
+                    >
+                      {f === "Google Places" ? "🔍 Google" : f === "Foursquare" ? "📍 Foursquare" : f === "OpenStreetMap" ? "🗺 OSM" : f === "Manuale" ? "✏️ Manuale" : f}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <div className="priority-grid">
                 {PRIORITY_OPTIONS.map((priority) => (
